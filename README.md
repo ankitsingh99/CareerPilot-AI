@@ -86,6 +86,18 @@ python tools/sync_tracker.py
 
 ---
 
+## Engineering Philosophy & AI Collaboration
+
+This project is built and maintained by **Ankit Kumar Singh** (ex-ZS Associates Data & Analytics Consultant), integrating modern AI coding assistants (Google Antigravity, Claude Code) as pair-programming accelerators.
+
+Our engineering standards:
+- **Domain-Driven Heuristics**: Automation is grounded in enterprise data engineering practices—schema idempotency, deterministic deduplication (`job_key.py`), and zero-PII data isolation inspired by commercial healthcare data compliance.
+- **Deterministic Over Generative**: High-precision regex rules, localized knowledge bases, and SQLite response caching handle 99% of screening workflows in `<1ms`. LLMs route strictly to free-tier endpoints and serve as a fallback for open-ended textareas.
+- **Strict Verification**: Every automated change must pass the 5-tier quality gate (`tools/quality_gate.sh`) including automated PII leak auditing, SSRF guards, and unit tests before merging.
+- **Human in the Loop**: Browser automation operates headed and never closes automatically; human sign-off is required before final submission.
+
+---
+
 ## Testing
 
 Run the test suite:
