@@ -61,6 +61,11 @@ jobs:
             echo
             python utils/upstream_triage.py --remote upstream --branch master
           } > report.md
+          if [ $(wc -c < report.md) -gt 60000 ]; then
+            head -c 60000 report.md > report_trunc.md
+            echo -e "\n\n_(Report truncated to fit GitHub issue size limits)_" >> report_trunc.md
+            mv report_trunc.md report.md
+          fi
           cat report.md
 
       - name: Open or update the rolling issue

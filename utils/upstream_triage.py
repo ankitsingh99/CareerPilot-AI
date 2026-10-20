@@ -178,19 +178,25 @@ def main() -> int:
         lines.append("")
         lines.append("| Commit | Subject | Fork files it touches |")
         lines.append("|---|---|---|")
-        for short, sha, subj, present in review:
+        display_review = review[:30] if len(review) > 30 else review
+        for short, sha, subj, present in display_review:
             shown = ", ".join(f"`{p}`" for p in present[:4]) or "_(new/shared paths)_"
             if len(present) > 4:
                 shown += f" +{len(present) - 4} more"
             lines.append(f"| {commit_cell(short, sha, slug)} | {subj} | {shown} |")
+        if len(review) > 30:
+            lines.append("")
+            lines.append(f"_... and {len(review) - 30} additional review commits omitted to stay within GitHub issue character limits._")
         # Ready-to-run cherry-pick lines - still information, not action. The
         # report stops here on purpose; a human runs (and verifies) these.
         lines.append("")
         lines.append("<details><summary>Ready-to-run cherry-picks (review each before running)</summary>")
         lines.append("")
         lines.append("```bash")
-        for short, sha, subj, _ in review:
+        for short, sha, subj, _ in display_review:
             lines.append(f"git cherry-pick {sha}  # {subj}")
+        if len(review) > 30:
+            lines.append(f"# ... and {len(review) - 30} more cherry-picks omitted")
         lines.append("```")
         lines.append("")
         lines.append("</details>")
@@ -204,8 +210,12 @@ def main() -> int:
         lines.append("")
         lines.append("| Commit | Subject | Why |")
         lines.append("|---|---|---|")
-        for short, sha, subj, why in skip:
+        display_skip = skip[:30] if len(skip) > 30 else skip
+        for short, sha, subj, why in display_skip:
             lines.append(f"| {commit_cell(short, sha, slug)} | {subj} | {why} |")
+        if len(skip) > 30:
+            lines.append("")
+            lines.append(f"_... and {len(skip) - 30} additional skipped commits omitted to stay within GitHub issue character limits._")
     else:
         lines.append("")
         lines.append("_None._")
