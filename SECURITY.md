@@ -1,22 +1,36 @@
 # Security Policy
 
-## Reporting a vulnerability
+## Reporting a Vulnerability
 
-Please report security findings privately via **[GitHub private vulnerability reporting](https://github.com/MadsLorentzen/ai-job-search/security/advisories/new)** rather than a public issue. You will get a response within a few days, credit in the fix unless you prefer otherwise, and public disclosure coordinated with the patch.
+Please report security findings privately via **[GitHub private vulnerability reporting](https://github.com/ankitsingh99/ai-job-search/security/advisories/new)** rather than a public issue. You will receive a prompt response, credit in the patch notes, and coordinated disclosure.
 
-If the private form is unavailable, open a public issue that describes the *class* of problem without a working recipe, and note that you have details to share privately.
+If the private reporting form is unavailable, open an issue describing the general class of problem without sensitive details, noting that you have reproduction steps to share privately.
 
-## Threat model, honestly stated
+---
 
-This is an agentic workflow: an LLM with file access reads untrusted web content (job postings) alongside your personal data (CV, profile, application history). That combination is the main risk surface, and it cannot be fully eliminated - only narrowed. What the framework does about it:
+## Threat Model & Privacy Architecture
 
-- **Untrusted-input rules**: `/apply` and `/rank` treat posting text as data, never instructions - agents are told not to follow directions embedded in postings and not to fetch URLs found inside posting text (the user-supplied posting URL is the one exception). Reviewer research starts from the company identity the user confirmed, never from links in the posting body.
-- **Permission allowlist**: `.claude/settings.json` pre-approves only the specific commands the workflow needs; the `security-guards` CI job fails any PR that widens it, adds package-manifest lifecycle scripts, or weakens the personal-data gitignore rules. Note the allowlist governs Bash commands - the model's native WebFetch/WebSearch tools are outside its reach, which is exactly why the instruction-level rules above exist.
-- **Personal data boundaries**: your populated profile, tracker, salary data, and application archive are gitignored; documents never leave the machine by design (`/notion-sync` syncs filenames only; nothing uploads document content anywhere).
+This is an agentic automation framework where an LLM with filesystem access reads external, untrusted web content (job postings, ATS application forms) alongside private candidate data (credentials, profile history). To guarantee safety, the framework enforces multi-layered defense boundaries:
 
-Instruction-level defenses raise the bar; they are not a sandbox. If you run this workflow against job boards you do not trust at all, review what the agent fetched and wrote before sending anything out.
+### 1. Zero-PII Git Isolation Architecture
+- **Master Blueprint Separation:** The core instructions and templates reside in `MASTER_TEMPLATE.md` with zero candidate PII.
+- **Local Environment Variables:** Candidate credentials, phone numbers, addresses, and compensation reside strictly in gitignored `.env` and `~/.config/job-agent/client_secret.json`.
+- **Pre-Commit PII Audit:** `python tools/generate_workspace_from_master.py --audit-pii` verifies that no hardcoded candidate PII is present in git-tracked files.
+- **Local Document Boundaries:** Master CVs (`cv/*.pdf`), generated cover letters (`cover_letters/*.md`), and application tracking logs (`latest_application.md`, `job_search_tracker.csv`, `jobs.db`) are excluded by `.gitignore` and never committed to remote repositories.
 
-## Scope notes
+### 2. Strict Zero-Cost OpenRouter Model Policy
+- Zero financial budget is allocated.
+- All LLM interactions strictly route through open-source models ending in `:free`.
+- Billing and credit exhaustion risks are eliminated at the wrapper level (`intelligence/llm_clients/openrouter.py`).
 
-- Portal CLI skills make live requests only when you run them; CI never does.
-- Community fork skills listed in the [forks index](https://github.com/MadsLorentzen/ai-job-search/discussions/78) are **not** covered by this policy - review the code you copy, as the index itself says.
+### 3. Untrusted Input & Anti-AI Honeypot Defenses
+- External job postings and web content are treated strictly as passive text data, never executable instructions.
+- The TurnItOut humanizer (`parsers/turnitout_engine.py`) and AI security defense protocol (`.agents/plugins/cybersec/skills/ai-security-defense/SKILL.md`) automatically strip hidden zero-width spaces, adversarial prompt injections, and canary traps (e.g. phrases inserted by automated HR filters to flag AI usage).
+
+### 4. Permission Allowlist & Security Guards
+- Execution permissions are audited by `utils/security.py` to prevent unauthorized shell command executions.
+- The `security_guards` check enforces that package manifest lifecycle hooks, wider shell commands, or loosened `.gitignore` rules cannot be added.
+
+### 5. Persistent Browser Isolation
+- Browser automation runs via headed Playwright (`tools/ats_runner.py`).
+- The browser window is never closed automatically, allowing human verification of all auto-populated form fields and document attachments before final submission.

@@ -19,9 +19,9 @@ Whenever a new question, screening prompt, dropdown selection, behavioral scenar
 ## 3. Learned Question Patterns & Standard Responses
 
 ### A. Experience & Seniority
-- **Total Experience**: 3.8+ years (from March 2022 to Present across TresVista, ZS Associates, and Rush by Kira).
-  - When options are bucketed (e.g., `< 8 years`, `3-5 years`): Select the matching bucket (`Less than 8 years` or `3–5 years`).
-- **People Management Experience**: 1–2 years formal people management (led a team of 4 at ZS Associates managing data standardization, vendor deliverables, and operational SLAs).
+- **Total Experience**: 4.8 years (across TresVista, ZS Associates, and Rush by Kira).
+  - When options are bucketed (e.g., `< 8 years`, `3-5 years`): Select the matching bucket (`Less than 8 years` or `3-5 years`).
+- **People Management Experience**: 1-2 years formal people management (led a team of 4 at ZS Associates managing data standardization, vendor deliverables, and operational SLAs).
   - Management description: "Directly managed a team with responsibility for goal setting, coaching, performance reviews, feedback, development plans, and overall team delivery."
 - **VP Level Ineligibility**: Candidate is NOT eligible for VP / Vice President roles. Exclude all VP positions from job searches and applications.
 

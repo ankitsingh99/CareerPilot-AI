@@ -16,7 +16,7 @@ This skill maintains continuity across chat sessions and model switches by ensur
 1. **Milestone Completions:** Whenever a major task (e.g. ATS integration, test suite run, document generation, git push) is completed.
 2. **Model Transitions:** When switching between Claude, GPT, or Gemini models to pass full contextual state without loss.
 3. **Session Context Bloat (Nudge Trigger):**
-   - When the conversation reaches **> 40–50 turns** or **Checkpoints 2+**.
+   - When the conversation reaches **> 40-50 turns** or **Checkpoints 2+**.
    - When message serialization latency or queuing is detected.
    - When a logical sub-task concludes.
 
@@ -25,7 +25,7 @@ This skill maintains continuity across chat sessions and model switches by ensur
 ## Core Responsibilities:
 
 ### 1. Maintain `SESSION_HANDOFF.md` on Disk
-Always write/update `SESSION_HANDOFF.md` at the project root with the following structure:
+Always write or update `SESSION_HANDOFF.md` at the project root with the following structure:
 
 ```markdown
 # AI Job Search: Session Handoff Document
@@ -39,33 +39,23 @@ Always write/update `SESSION_HANDOFF.md` at the project root with the following 
 - Brief summary of the current project state and what was just accomplished.
 
 ## 2. Key Architecture & Single Sources of Truth
-- **Candidate Profile & Rules:** `GEMINI.md`, `CLAUDE.md`, `user_inputs/candidate_preferences_and_rules.md`
-- **Secrets & Credentials (Local Only):** `client_secret.json` (gitignored & geminiignored)
-- **Universal ATS Engine:** `tools/ats_runner.py` (non-blocking, instant streaming)
-- **Master Resume:** Loaded dynamically from `.env` (`CANDIDATE_MASTER_RESUME`)
+- **Master Blueprint:** `MASTER_TEMPLATE.md` (universal person-agnostic instructions)
+- **Candidate Profile & Rules:** `AGENTS.md` (rehydrated via `tools/generate_workspace_from_master.py`)
+- **Secrets & Credentials (Local Only):** `.env` & `~/.config/job-agent/client_secret.json` (gitignored)
+- **Universal ATS Engine:** `tools/ats_runner.py` (headed Playwright with persistent browser)
+- **Master Resume:** Loaded dynamically from `.env` (`CANDIDATE_MASTER_RESUME`) or `cv/*.pdf`
 - **Application Tracker:** `job_search_tracker.csv` & `jobs.db`
+- **Zero-Cost LLM:** OpenRouter free tier (`cohere/north-mini-code:free`, etc.)
 
 ## 3. Recently Established Rules & Directives (Active)
-- Section 10: Place of Residence (Candidate configured primary and fallback city)
-- Section 11: Local-only `client_secret.json` with auto-login -> auto-register flow
-- Section 12: Manual login intervention nudge & explicit user confirmation
-- Section 13: Zero blind waiting for OTP/PIN/CAPTCHA; prompt user directly in chat
-
-## 4. Pending / Next Immediate Tasks
-- [ ] Next action item 1
-- [ ] Next action item 2
-
-## 5. Instructions for New Session / Next Model
-- Run `git status` to verify working tree.
-- Read `SESSION_HANDOFF.md` and `user_inputs/candidate_preferences_and_rules.md`.
-- Resume directly on pending tasks without re-asking established candidate preferences.
+- Section 1: Python 3.15+ native interpreter lazy imports (`PYTHON_LAZY_IMPORTS=all`)
+- Section 2: Zero hardcoded PII in git; verify with `python tools/generate_workspace_from_master.py --audit-pii`
+- Section 3: Never close the browser window automatically
+- Section 4: Zero em dashes (`—`)
 ```
 
----
-
-## 2. Proactive "New Session" Nudge Protocol
-When context growth starts degrading responsiveness:
-1. Update `SESSION_HANDOFF.md` with the latest progress.
-2. Alert the user with a gentle nudge:
-   > 💡 **Optimal Time for a Fresh Session:**
-   > `SESSION_HANDOFF.md` has been fully generated and updated on disk. You can safely start a new chat now. In the new chat, simply say **"Continue from handoff"** and we will pick up instantly with zero lag.
+### 2. Proactive Session Nudging
+When token consumption grows large (>100k tokens in context), write the handoff document and inform the user with:
+- Summary of completed work
+- Clear pointer to `SESSION_HANDOFF.md`
+- Suggested prompt for the next clean session
