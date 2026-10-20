@@ -140,6 +140,12 @@ The following behavioral and operational rules apply across all execution engine
 - **Tier 2 (OpenRouter Free Tier Proofreader - Secondary):** If Tier 1 flags defects or warnings, automatically dispatch to OpenRouter zero-cost free tier (`cohere/north-mini-code:free` or `google/gemma-4-31b-it:free`) to restore accurate quantified facts (e.g. `40%`, `15+`) and grammar.
 - **Old Letters Untouched:** Existing past application letters remain immutable; this validation gate strictly governs all newly generated cover letters.
 
+### 2.8 Context Engineering, Quality Gates & Vibe Coding Protocol
+- **PRP Blueprint Standard:** Any new feature or architectural addition must be guided by `templates/PRP_TEMPLATE.md` with explicit validation criteria, gotchas, and test requirements.
+- **Automated Quality Verification Gate:** Before staging, committing, or deploying code changes, execute `tools/quality_gate.sh`. All 5 verification levels (PII audit, SSRF guard, linter integrity, Python 3.15 lazy imports, pytest suite) must achieve 100% pass.
+- **XML Context Framing:** Structure prompts and agent interactions with explicit XML tags (`<context>`, `<intent>`, `<constraints>`, `<validation_gates>`) to maximize model instruction adherence and prevent context drift.
+- **Session Continuity (Handoff Context):** Track ongoing progress, recent SHAs, and active decisions in `SESSION_HANDOFF.md` to ensure zero context loss across sessions.
+
 ---
 
 ## Part 3: End-to-End Application Workflow
