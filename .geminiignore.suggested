@@ -1,0 +1,34 @@
+# Upstream docs the agent never needs
+README.md
+CONTRIBUTING.md
+CHANGELOG.md
+SECURITY.md
+SETUP.md
+LICENSE
+.github/
+assets/
+tests/
+tools/
+# Denmark-only code (no use for an India search)
+salary_lookup.py
+.agents/skills/jobbank-search/
+.agents/skills/jobdanmark-search/
+.agents/skills/jobindex-search/
+.agents/skills/jobnet-search/
+# Dependencies and binaries
+**/node_modules/
+**/bun.lock
+*.pdf
+*.gif
+cover_letters/OpenFonts/
+# Data the agent should query via script, not read whole
+job_search_tracker.csv
+jobs.db
+*.db
+company_research/
+# Sensitive or archived
+client_secret.json
+.browser_session/
+user_inputs/
+**/Archive/
+**/archive/

@@ -1,0 +1,4 @@
+# Add companies you want the job scraper to ignore (case-insensitive substring match).
+# Example:
+# Toxic Startup Inc.
+# Old Employer Corp.

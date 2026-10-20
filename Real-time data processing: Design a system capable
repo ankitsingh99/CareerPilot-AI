@@ -1,0 +1,16 @@
+Real-time data processing: Design a system capable of handling high-throughput event streams, such as ride requests.
+Distributed systems: Optimize a Spark job for processing large-scale datasets efficiently.
+Concurrency: Design thread-safe caching mechanisms to manage real-time data, like ride requests.
+Memory Optimization: Reduce heap allocations in a high-throughput service to improve memory efficiency.
+Performance-Critical Code: Optimize algorithms for low-latency systems, focusing on performance under tight time constraints.
+
+Given a string "pineapplepenapple" and a list of strings ["apple", "pen", "applepen", "pine", "pineapple"], determine the number of ways you can concatenate words from the list to form the original string.
+Implement a function that calculates the square root of a given number, up to 2 decimal places. Then, optimize the function by introducing a caching mechanism to store previously computed results and eliminate redundant calculations.
+
+Note
+Common miscues in Uber tech rounds(don't make these mistakes! ❌):
+
+Ignoring data freshness: Proposing batch processing for real-time use cases, such as driver-rider matching, can lead to outdated or delayed information.
+Overlooking Uber’s scale: Designing systems without considering Uber’s massive scale can lead to bottlenecks. For example, a system that can’t handle 10x growth in ride requests may struggle under heavy load.
+Vague trade-offs: Avoid statements like “We’ll use a database” without explaining your choice of database type. For example, justify the decision between NoSQL vs. SQL databases. At a SQL-focused company like Uber, using SQL may be more likely to get buy-in.
+Over focusing stack: While attending questions, focus on getting the solution correct using technologies you’re familiar with, rather than overly focusing on the exact stack Uber uses.

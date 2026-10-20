@@ -1,0 +1,26 @@
+system:
+  fit_threshold: 80
+  headless_browser: true
+  max_parallel_searches: 3
+  persistent_user_data_dir: "./browser_session"
+
+candidate_filters:
+  target_roles:
+    - "Data Engineer"
+    - "Senior Data Engineer"
+    - "PySpark Developer"
+    - "Data Governance Engineer"
+    - "Analytics Engineer"
+  excluded_titles_regex: "(?i)(Intern|Manager|Director|VP|Architect|Lead|Principal)"
+  allowed_locations:
+    - "Noida"
+    - "Delhi"
+    - "Gurugram"
+    - "NCR"
+    - "Remote"
+    - "India"
+
+llm_tier_assignments:
+  tier_1: "google/gemini-flash-1.5"
+  tier_2: "anthropic/claude-3-5-haiku"
+  tier_3: "anthropic/claude-3-5-sonnet"

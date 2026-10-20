@@ -1,0 +1,115 @@
+# ============================================================
+# .geminiignore - Controls which files enter the LLM context
+# Strategy: index ONLY files needed for live application workflow
+# ============================================================
+
+# ── Dependency Directories & Package Caches ─────────────────
+**/node_modules/
+.agents/**/node_modules/
+.agents/**/*.log
+.agents/usage/
+
+# ── Python Runtime Artifacts ────────────────────────────────
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── Lockfiles & Generated Manifests ─────────────────────────
+bun.lock
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+skills-lock.json
+
+# ── Binaries, PDFs, Word Docs & Media ───────────────────────
+*.pdf
+*.docx
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.ico
+*.aiff
+*.mp3
+*.mp4
+*.zip
+*.tar.gz
+
+# ── LaTeX & Build Artifacts ──────────────────────────────────
+*.aux
+*.log
+*.out
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+build/
+dist/
+
+# ── OS & IDE Files ───────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ── Large Data Archives & Personal Application Records ───────
+documents/**
+user_inputs/cv/**
+user_inputs/data/**
+user_inputs/documents/**
+company_research/**
+cover_letters/**
+assets/**
+.candidate_secrets.json
+client_secret.json
+jobs.db
+job_search_tracker.csv
+
+# ── Scratch / Temp Files (per-application artifacts) ─────────
+# These are runtime outputs (screenshots, HTML dumps, .py stubs).
+# They are NEVER needed in LLM context - processed locally.
+scratch/
+*.html
+
+# ── Heavy Documentation (rarely needed in context) ───────────
+# These files are large reference docs, not active logic.
+# Read them explicitly only when modifying/referencing them.
+CHANGELOG.md
+CONTRIBUTING.md
+SETUP.md
+README.md
+
+# ── Add-on Skills Internal Artifacts ─────────────────────────
+# Only SKILL.md files inside add-on_skills/ need indexing.
+# Internal configs, JSONs, READMEs within them are noise.
+add-on_skills/**/requirements.txt
+add-on_skills/**/*.json
+add-on_skills/**/node_modules/
+
+# ── Seeds & Test Fixtures ────────────────────────────────────
+# Bulk test data and seed records - large, static, rarely needed.
+seeds/
+tests/
+guard/
+templates/
+
+# ── Upskill Reports & Company Research ───────────────────────
+upskill/
+company_research/*.json
+
+# ── Git & Agent Internal State ───────────────────────────────
+.git/
+.claude/projects/
+.superpowers/
+*.tmp
+
+# ── Token-kit (moved to add-on_skills, old root dir ignored) ─
+token-kit/
+
+# Persistent browser session
+.browser_session/

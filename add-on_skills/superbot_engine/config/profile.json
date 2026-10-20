@@ -1,0 +1,44 @@
+{
+  "personal_info": {
+    "first_name": "Candidate",
+    "last_name": "Applicant",
+    "email": "candidate@example.com",
+    "phone": "+1-555-0100",
+    "location": "City, State, Country",
+    "linkedin": "https://linkedin.com/in/candidate",
+    "github": "https://github.com/candidate",
+    "education": "Bachelor of Science, Computer Science"
+  },
+  "current_employment": {
+    "company": "Technology Consulting Corp",
+    "role": "Data Engineer / Technology Consultant",
+    "location": "City, Country",
+    "tech_stack": [
+      "PySpark",
+      "Python",
+      "SQL",
+      "Apache Airflow",
+      "Databricks",
+      "Snowflake",
+      "AWS",
+      "PostgreSQL"
+    ]
+  },
+  "experience_bullets": [
+    "Architected distributed data pipelines using PySpark and Databricks, processing multi-terabyte datasets and optimizing job execution latency.",
+    "Orchestrated complex data workflows and ETL pipelines with Apache Airflow and AWS services for reliable enterprise data ingestion.",
+    "Designed and executed optimized SQL queries, Common Table Expressions (CTEs), and window functions on Snowflake and PostgreSQL databases.",
+    "Implemented automated data governance protocols and data quality validation frameworks within cloud data warehouse environments.",
+    "Engineered scalable data transformations and feature engineering pipelines targeting high-performance analytics workloads."
+  ],
+  "qa_knowledge_base": {
+    "years_of_experience": 3,
+    "notice_period_days": 30,
+    "current_ctc_lpa": "Confidential / Market Standard",
+    "expected_ctc_lpa": "Negotiable based on role scope",
+    "sponsorship_required": false,
+    "authorized_to_work_in_india": true,
+    "preferred_work_location": "Noida / Delhi-NCR / Remote",
+    "willing_to_relocate": false
+  }
+}
