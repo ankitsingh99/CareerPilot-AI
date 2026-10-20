@@ -15,9 +15,11 @@ import json
 import os
 import re
 import sys
+import time
+import hashlib
+import sqlite3
 import urllib.error
 import urllib.request
-import time
 from pathlib import Path
 
 _SECRETS_FILE = Path(__file__).parent.parent / ".candidate_secrets.json"
@@ -40,8 +42,50 @@ DEFAULT_FALLBACK_FREE_MODELS = [
 FREE_MODELS_POOL: list[str] = list(DEFAULT_FALLBACK_FREE_MODELS)
 
 _CACHE_FILE = Path.home() / ".cache" / "careerpilot" / "openrouter_free_models.json"
+_RESPONSE_CACHE_DB = Path.home() / ".cache" / "careerpilot" / "llm_responses_cache.sqlite"
 _CACHE_TTL_SECONDS = 3600  # 1 hour
 _IN_MEMORY_CACHE: dict = {"timestamp": 0.0, "models": []}
+
+
+def _init_response_cache():
+    _RESPONSE_CACHE_DB.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(_RESPONSE_CACHE_DB) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS response_cache (
+                cache_key TEXT PRIMARY KEY,
+                model TEXT,
+                response TEXT,
+                created_at REAL
+            )
+        """)
+
+
+def get_cached_response(cache_key: str) -> str | None:
+    """Retrieve locally cached LLM response to eliminate redundant OpenRouter requests."""
+    try:
+        _init_response_cache()
+        with sqlite3.connect(_RESPONSE_CACHE_DB) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT response FROM response_cache WHERE cache_key = ?", (cache_key,))
+            row = cursor.fetchone()
+            if row:
+                return row[0]
+    except Exception:
+        pass
+    return None
+
+
+def save_cached_response(cache_key: str, model: str, response: str):
+    """Persist LLM response to disk for permanent 0-token reuse."""
+    try:
+        _init_response_cache()
+        with sqlite3.connect(_RESPONSE_CACHE_DB) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO response_cache (cache_key, model, response, created_at) VALUES (?, ?, ?, ?)",
+                (cache_key, model, response, time.time()),
+            )
+    except Exception:
+        pass
 
 
 def is_free_model(model_name: str) -> bool:
@@ -215,6 +259,13 @@ def ask(
     cleaned_prompt = trim_text_content(prompt) if trim_input else prompt
     cleaned_system = trim_text_content(system, max_chars=1500) if trim_input else system
 
+    # 1. Local Persistent Disk Cache Check (0 tokens, 0 network requests)
+    cache_key = hashlib.sha256(f"{cleaned_system}::{cleaned_prompt}::{model}::{json_mode}".encode("utf-8")).hexdigest()
+    cached_content = get_cached_response(cache_key)
+    if cached_content:
+        print(f"[openrouter:cache] ⚡ Local disk cache hit (0 requests, 0 tokens consumed)")
+        return cached_content
+
     messages = [
         {"role": "system", "content": cleaned_system},
         {"role": "user", "content": cleaned_prompt},
@@ -224,6 +275,7 @@ def ask(
         "Content-Type": "application/json",
         "HTTP-Referer": os.getenv("CANDIDATE_PORTFOLIO_URL", "https://github.com/ankitsingh99/ai-job-search"),
         "X-Title": "AI-Job-Search-Agent",
+        "X-OpenRouter-Cache": "true",
     }
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -275,6 +327,8 @@ def ask(
                     parts = re.split(r"(?:Here is the letter|Here is the cover letter|Dear Hiring Team|Dear Hiring Manager)", content, flags=re.IGNORECASE)
                     if len(parts) > 1:
                         content = "Dear Hiring Team,\n\n" + parts[-1].strip()
+                if content:
+                    save_cached_response(cache_key, current_model, content)
                 return content
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode(errors="replace")
@@ -308,6 +362,13 @@ def ask_with_usage(
     cleaned_prompt = trim_text_content(prompt) if trim_input else prompt
     cleaned_system = trim_text_content(system, max_chars=1500) if trim_input else system
 
+    # 1. Local Persistent Disk Cache Check
+    cache_key = hashlib.sha256(f"{cleaned_system}::{cleaned_prompt}::{model}::{json_mode}".encode("utf-8")).hexdigest()
+    cached_content = get_cached_response(cache_key)
+    if cached_content:
+        print(f"[openrouter:cache] ⚡ Local disk cache hit (0 requests consumed, 0 tokens)")
+        return cached_content, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
     messages = [
         {"role": "system", "content": cleaned_system},
         {"role": "user", "content": cleaned_prompt},
@@ -317,6 +378,7 @@ def ask_with_usage(
         "Content-Type": "application/json",
         "HTTP-Referer": os.getenv("CANDIDATE_PORTFOLIO_URL", "https://github.com/ankitsingh99/ai-job-search"),
         "X-Title": "AI-Job-Search-Agent",
+        "X-OpenRouter-Cache": "true",
     }
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -357,6 +419,8 @@ def ask_with_usage(
                 usage = data.get("usage", {})
                 choice_msg = data.get("choices", [{}])[0].get("message", {})
                 content = (choice_msg.get("content") or choice_msg.get("reasoning") or "").strip()
+                if content:
+                    save_cached_response(cache_key, current_model, content)
                 return content, usage
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode(errors="replace")

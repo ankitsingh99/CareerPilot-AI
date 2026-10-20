@@ -43,8 +43,10 @@ All fields below are loaded from `.env` or structured user inputs. When generati
 - **Status:** Actively exploring opportunities (Immediate availability)
 - **Notice Period:** `Immediate Joiner (0 days notice)`
 - **Total Experience:** `4.8` years
-- **Current CTC / Compensation:** `18` LPA (`1800000`)
+- **Current CTC / Compensation / Annual Income:** `18` LPA (`1800000`)
+- **Annual Income Directive:** Whenever any field asks for annual income, current salary, compensation, current CTC, or package, ALWAYS use `1800000` (or `18` if LPA/decimal). NEVER fill `4` or years of experience into income/salary fields.
 - **Expected CTC / Salary Expectation:** `28` LPA (`2800000`)
+- **Upper Salary Range Directive:** Whenever any pay or salary range is written on a job posting or description, ALWAYS use the upper value as desired salary. If no range is written, fallback to 28 LPA (2800000 INR).
 - **Master Resume Path:** `cv/Ankit_Resume_v4.pdf`
 
 ### 1.3 Education Template
@@ -52,7 +54,7 @@ All fields below are loaded from `.env` or structured user inputs. When generati
   - **Institution:** `University of Delhi`
   - **Major / Field of Study:** `Business Economics`
   - **Duration:** `07/2017` - `07/2020`
-  - **Score / Grade:** `7.174 CGPA`
+  - **Score / Grade:** `6.5 CGPA`
   - **Key Topics:** `Statistics, Real Analysis, Econometrics, Quantitative Techniques for Management, Micro & Macro Economics, Database & Research, Organizational Behaviour`
 - **Senior Secondary School (Class 12th):** `New Sainik Senior Secondary Public School`
   - **Grade / Score:** `72%`
@@ -121,6 +123,7 @@ The following behavioral and operational rules apply across all execution engine
 - **Zero Git Commits for Individual Job Applications:** Never commit or push to GitHub after applying to an individual role. Commits are reserved for framework upgrades.
 - **Autonomous Tracker Recording:** Automatically record applied jobs in `user_inputs/job_search_tracker.csv` and replicate to SQLite `jobs.db` via `tools/sync_tracker.py`.
 - **Continuous Learning & Adaptation:** Automatically capture novel ATS questions and candidate answers in `user_inputs/application_qa_knowledge_base.json` and reuse them.
+- **Daily Easy Apply Safety Ceiling (35-40 Max / 24h):** LinkedIn enforces an account-level daily rate limit on Easy Apply (typically 35-50 applications per rolling 24 hours). The framework enforces a strict safety ceiling of 40 Easy Apply submissions per calendar day to protect the candidate's account standing. Once reached or if an on-page application limit warning is detected, automation must immediately halt, sound a notification, and stop.
 
 ### 2.6 Strict Authentication & Zero-Lockout Protocol (ZERO-TOLERANCE)
 - **Zero Credential Guessing / Single-Attempt Maximum:** Automation is permitted AT MOST ONE (1) login attempt per portal domain. NEVER iterate through password arrays, username guesses, or variations.

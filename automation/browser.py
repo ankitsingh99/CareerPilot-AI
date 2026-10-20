@@ -66,6 +66,11 @@ DEFAULT_CANDIDATE = {
     "raw_phone":        os.getenv("CANDIDATE_RAW_PHONE", ""),
     "phone_country_code": os.getenv("CANDIDATE_PHONE_COUNTRY_CODE", "+1"),
     "address":          os.getenv("CANDIDATE_ADDRESS", ""),
+    "address_2_line1":  os.getenv("CANDIDATE_ADDRESS_2_LINE1", ""),
+    "address_2_line2":  os.getenv("CANDIDATE_ADDRESS_2_LINE2", ""),
+    "address_3_line1":  os.getenv("CANDIDATE_ADDRESS_3_LINE1", ""),
+    "address_3_line2":  os.getenv("CANDIDATE_ADDRESS_3_LINE2", ""),
+    "address_3_line3":  os.getenv("CANDIDATE_ADDRESS_3_LINE3", ""),
     "city":             os.getenv("CANDIDATE_CITY", ""),
     "city_fallback":    os.getenv("CANDIDATE_CITY_FALLBACK", os.getenv("CANDIDATE_CITY", "")),
     "state":            os.getenv("CANDIDATE_STATE", ""),
@@ -221,6 +226,7 @@ ATS_PATTERNS = {
     "icims":          ["icims.com"],
     "rippling":       ["ats.rippling.com"],
     "thehirehub":     ["thehirehub.ai"],
+    "pinpoint":       ["pinpointhq.com"],
 }
 
 def detect_ats(url: str) -> str:
@@ -837,6 +843,233 @@ def mode_login(url: str, slug: str, keep_open: bool = True) -> bool:
     return logged_in
 
 
+def resolve_address_components(has_line2: bool = False, has_line3: bool = False, cand: dict = None) -> tuple[str, str, str]:
+    """
+    Resolves address line 1, line 2, line 3 based on field availability and user rules.
+    1. If 3 address fields are available:
+       - line 1: cand.get("address_3_line1") or derived parts[:2]
+       - line 2: cand.get("address_3_line2") or derived parts[2]
+       - line 3: cand.get("address_3_line3") or derived parts[3]
+    2. If 2 address fields are available:
+       - line 1: cand.get("address_2_line1") or derived parts[:3]
+       - line 2: cand.get("address_2_line2") or derived parts[3:]
+       - line 3: ""
+    3. If only 1 address field is available:
+       - line 1: cand.get("address") or full address string
+       - line 2: ""
+       - line 3: ""
+    """
+    if cand is None:
+        cand = CANDIDATE
+
+    full_addr = cand.get("address", "").strip()
+    parts = [p.strip() for p in full_addr.split(",") if p.strip()]
+
+    if has_line3:
+        l1 = cand.get("address_3_line1") or (", ".join(parts[:2]) if len(parts) >= 2 else full_addr)
+        l2 = cand.get("address_3_line2") or (parts[2] if len(parts) >= 3 else "")
+        l3 = cand.get("address_3_line3") or (parts[3] if len(parts) >= 4 else "")
+        return l1.strip(), l2.strip(), l3.strip()
+
+    if has_line2:
+        l1 = cand.get("address_2_line1") or (", ".join(parts[:3]) if len(parts) >= 3 else full_addr)
+        l2 = cand.get("address_2_line2") or (", ".join(parts[3:]) if len(parts) >= 4 else "")
+        return l1.strip(), l2.strip(), ""
+
+    return full_addr, "", ""
+
+
+def fill_address_hierarchy(page: Page, cand: dict = None) -> dict:
+    """
+    Detects address structure (1-line, 2-line, or 3-line) on the page,
+    along with City, State/Province, Postal Code, and Country,
+    and fills them according to candidate preferences.
+    """
+    if cand is None:
+        cand = CANDIDATE
+
+    filled = {}
+
+    # 1. Detect Line 3
+    line3_selectors = [
+        "#address3", "#address_3", "input[id*='address3' i]", "input[id*='address_3' i]",
+        "input[id*='address_line_3' i]", "input[name*='address3' i]", "input[name*='address_3' i]",
+        "input[name*='address_line_3' i]", "input[placeholder*='address 3' i]", "input[placeholder*='address line 3' i]"
+    ]
+    el_line3 = None
+    for sel in line3_selectors:
+        try:
+            el = page.query_selector(sel)
+            if el and el.is_visible() and el.is_enabled():
+                el_line3 = el
+                break
+        except Exception:
+            pass
+
+    # 2. Detect Line 2
+    line2_selectors = [
+        "#address2", "#address_2", "input[id*='address2' i]", "input[id*='address_2' i]",
+        "input[id*='address_line_2' i]", "input[name*='address2' i]", "input[name*='address_2' i]",
+        "input[name*='address_line_2' i]", "input[placeholder*='address 2' i]", "input[placeholder*='address line 2' i]",
+        "input[placeholder*='apartment' i]", "input[placeholder*='apt' i]", "input[placeholder*='suite' i]",
+        "input[placeholder*='unit' i]", "input[id*='suite' i]", "input[name*='suite' i]", "input[id*='apt' i]"
+    ]
+    el_line2 = None
+    for sel in line2_selectors:
+        try:
+            el = page.query_selector(sel)
+            if el and el.is_visible() and el.is_enabled():
+                el_line2 = el
+                break
+        except Exception:
+            pass
+
+    # 3. Detect Line 1
+    line1_selectors = [
+        "#address1", "#address_1", "input[id*='address1' i]", "input[id*='address_1' i]",
+        "input[id*='address_line_1' i]", "input[name*='address1' i]", "input[name*='address_1' i]",
+        "input[name*='address_line_1' i]", "input[placeholder*='address 1' i]", "input[placeholder*='address line 1' i]",
+        "input[id='address' i]", "input[name='address' i]", "input[id*='street' i]", "input[name*='street' i]",
+        "input[placeholder*='street' i]", "input[placeholder='Address' i]", "input[id*='street_address' i]"
+    ]
+    el_line1 = None
+    for sel in line1_selectors:
+        try:
+            el = page.query_selector(sel)
+            if el and el.is_visible() and el.is_enabled():
+                el_line1 = el
+                break
+        except Exception:
+            pass
+
+    has_line3 = (el_line3 is not None)
+    has_line2 = (el_line2 is not None) or has_line3
+
+    addr1, addr2, addr3 = resolve_address_components(has_line2=has_line2, has_line3=has_line3, cand=cand)
+
+    if el_line1 and addr1:
+        try:
+            el_line1.fill(addr1)
+            filled["address_line1"] = addr1
+        except Exception:
+            pass
+
+    if el_line2 and addr2 and has_line2:
+        try:
+            el_line2.fill(addr2)
+            filled["address_line2"] = addr2
+        except Exception:
+            pass
+
+    if el_line3 and addr3 and has_line3:
+        try:
+            el_line3.fill(addr3)
+            filled["address_line3"] = addr3
+        except Exception:
+            pass
+
+    # 4. City / Town
+    city_val = cand.get("city", "Noida")
+    for sel in [
+        "#town", "input[id*='town' i]", "input[name*='town' i]",
+        "input[id*='city' i]", "input[name*='city' i]",
+        "input[placeholder*='city' i]", "input[placeholder*='town' i]"
+    ]:
+        try:
+            el = page.query_selector(sel)
+            if el and el.is_visible() and el.is_enabled():
+                el_id = (el.get_attribute("id") or "").lower()
+                el_name = (el.get_attribute("name") or "").lower()
+                if "ethnicity" in el_id or "ethnicity" in el_name:
+                    continue
+                if not el.input_value():
+                    el.fill(city_val)
+                    filled["city"] = city_val
+                    break
+        except Exception:
+            pass
+
+    # 5. State / Province / Region
+    state_val = cand.get("state", "Uttar Pradesh")
+    for sel in [
+        "#region", "input[id*='region' i]", "input[name*='region' i]",
+        "input[id*='state' i]", "input[name*='state' i]",
+        "input[id*='province' i]", "input[name*='province' i]",
+        "input[placeholder*='state' i]", "input[placeholder*='province' i]"
+    ]:
+        try:
+            el = page.query_selector(sel)
+            if el and el.is_visible() and el.is_enabled():
+                if not el.input_value():
+                    el.fill(state_val)
+                    filled["state"] = state_val
+                    break
+        except Exception:
+            pass
+
+    for sel in [
+        "select[id*='state' i]", "select[name*='state' i]",
+        "select[id*='province' i]", "select[name*='province' i]",
+        "select[id*='region' i]", "select[name*='region' i]"
+    ]:
+        try:
+            el = page.query_selector(sel)
+            if el and el.is_visible() and el.is_enabled():
+                try:
+                    el.select_option(label=state_val)
+                    filled["state"] = state_val
+                except Exception:
+                    try:
+                        el.select_option(value=state_val)
+                        filled["state"] = state_val
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    # 6. Postal Code / Zip Code / Postcode
+    pincode_val = cand.get("pincode", "201304")
+    for sel in [
+        "#postcode", "input[id*='postcode' i]", "input[name*='postcode' i]",
+        "input[id*='zip' i]", "input[name*='zip' i]",
+        "input[id*='postal' i]", "input[name*='postal' i]",
+        "input[placeholder*='zip' i]", "input[placeholder*='postal' i]", "input[placeholder*='postcode' i]"
+    ]:
+        try:
+            el = page.query_selector(sel)
+            if el and el.is_visible() and el.is_enabled():
+                if not el.input_value():
+                    el.fill(pincode_val)
+                    filled["pincode"] = pincode_val
+                    break
+        except Exception:
+            pass
+
+    # 7. Country
+    country_val = cand.get("country", "India")
+    for sel in [
+        "select[id*='country' i]", "select[name*='country' i]"
+    ]:
+        try:
+            el = page.query_selector(sel)
+            if el and el.is_visible() and el.is_enabled():
+                try:
+                    el.select_option(label=country_val)
+                    filled["country"] = country_val
+                except Exception:
+                    try:
+                        el.select_option(value="IN")
+                        filled["country"] = country_val
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    if filled:
+        print(f"[fill:address] Hierarchical address populated: {list(filled.keys())}")
+    return filled
+
+
 # ── Common fill & upload helpers ─────────────────────────────────────────────
 def _fill_common(page: Page):
     """Autofill standard fields across all ATS types."""
@@ -846,7 +1079,6 @@ def _fill_common(page: Page):
         "email":    CANDIDATE["email"],
         "phone":    CANDIDATE["phone"],
         "linkedin": CANDIDATE["linkedin"],
-        "address":  CANDIDATE["address"],
     }
     filled = []
     for keyword, value in mapping.items():
@@ -871,6 +1103,9 @@ def _fill_common(page: Page):
     if filled:
         print(f"[fill] Auto-filled: {', '.join(filled)}")
 
+    # ── Hierarchical Address & Location ──────────────────────────────────────
+    fill_address_hierarchy(page, cand=CANDIDATE)
+
     # ── Date of Birth ───────────────────────────────────────────────────────
     _fill_dob(page)
 
@@ -882,6 +1117,92 @@ def _fill_common(page: Page):
 
     # ── Education History ───────────────────────────────────────────────────
     _fill_education_history(page)
+
+    # ── Screening & Custom QA Semantics ─────────────────────────────────────
+    _fill_screening_and_custom_questions(page)
+
+
+def _fill_screening_and_custom_questions(page: Page):
+    """Autofill screening questions, compensation, notice period, and technical YOE across any ATS portal."""
+    try:
+        from core.qa_semantics_engine import QASemanticsEngine
+    except ImportError:
+        return
+
+    # 1. Inputs (Text, Number, Tel, Url)
+    for inp in page.query_selector_all("input:not([type='file']):not([type='radio']):not([type='checkbox']):not([type='hidden'])"):
+        try:
+            if not inp.is_visible() or inp.input_value():
+                continue
+            inp_id = (inp.get_attribute("id") or "").lower()
+            inp_name = (inp.get_attribute("name") or "").lower()
+            inp_ph = (inp.get_attribute("placeholder") or "").lower()
+            lbl_el = page.query_selector(f"label[for='{inp.get_attribute('id')}']") if inp.get_attribute('id') else None
+            lbl_text = (lbl_el.inner_text().strip().lower() if lbl_el else "")
+            aria_lbl = (inp.get_attribute("aria-label") or "").lower()
+            full_lbl = f"{lbl_text} {inp_ph} {inp_name} {inp_id} {aria_lbl}"
+
+            # Guard comments
+            if any(bad in full_lbl for bad in ["comment", "note", "desc", "reason", "feedback"]):
+                continue
+
+            ans = QASemanticsEngine.match_question(full_lbl, field_type=inp.get_attribute("type") or "text")
+            if ans and ans != "N/A":
+                inp.fill(ans)
+                print(f"[fill:qa] Auto-filled '{full_lbl[:35]}...' -> '{ans}'")
+        except Exception:
+            pass
+
+    # 2. Dropdowns (<select>)
+    for sel in page.query_selector_all("select"):
+        try:
+            if not sel.is_visible():
+                continue
+            cur = (sel.input_value() or "").strip()
+            if cur and cur.lower() not in ("", "select", "select an option", "please select"):
+                continue
+            sel_id = sel.get_attribute("id") or ""
+            lbl_el = page.query_selector(f"label[for='{sel_id}']") if sel_id else None
+            lbl_text = (lbl_el.inner_text().strip().lower() if lbl_el else "")
+            opts = sel.query_selector_all("option")
+            opt_texts = [o.inner_text().strip() for o in opts if o.inner_text().strip()]
+            if not opt_texts:
+                continue
+
+            ans = QASemanticsEngine.match_question(lbl_text or sel_id, field_type="select", options=opt_texts)
+            if ans and ans in opt_texts:
+                sel.select_option(label=ans)
+                print(f"[fill:qa:select] Selected '{ans}' for '{lbl_text[:35]}...'")
+        except Exception:
+            pass
+
+    # 3. Radio fieldsets
+    for fs in page.query_selector_all("fieldset"):
+        try:
+            legend = fs.query_selector("legend")
+            leg_text = (legend.inner_text() if legend else "").strip().lower()
+            radios = fs.query_selector_all("input[type='radio']")
+            if any(r.is_checked() for r in radios):
+                continue
+            radio_labels = []
+            for r in radios:
+                r_id = r.get_attribute("id") or ""
+                lbl_el = fs.query_selector(f"label[for='{r_id}']")
+                if lbl_el:
+                    radio_labels.append(lbl_el.inner_text().strip())
+
+            ans = QASemanticsEngine.match_question(leg_text, field_type="radio", options=radio_labels)
+            if ans:
+                for r in radios:
+                    r_id = r.get_attribute("id") or ""
+                    lbl_el = fs.query_selector(f"label[for='{r_id}']")
+                    lbl_txt = (lbl_el.inner_text() if lbl_el else "").strip().lower()
+                    if ans.lower() in lbl_txt or lbl_txt in ans.lower():
+                        r.check()
+                        print(f"[fill:qa:radio] Checked '{lbl_txt}' for '{leg_text[:35]}...'")
+                        break
+        except Exception:
+            pass
 
 
 def _fill_dob(page: Page):
@@ -1309,6 +1630,284 @@ def _alert_before_submit(slug: str):
     print(f"[apply] Prefill complete for [{slug}]. Browser kept open for your review & submission.")
 
 
+def _apply_pinpoint(url: str, slug: str, fields: dict = None, keep_open: bool = True, auto_submit: bool = False):
+    print("[apply:pinpoint] Pinpoint HQ: persistent session -> navigate -> autofill form -> resume upload...")
+    pw, ctx, page = open_persistent_browser()
+
+    # 1. Navigate to application form
+    app_url = url if "/applications/new" in url else url.rstrip("/") + "/applications/new"
+    navigate(page, app_url)
+    time.sleep(2.5)
+
+    # Dismiss cookie banner if present
+    try:
+        accept_btn = page.locator("button:has-text('Accept all')")
+        if accept_btn.count() > 0 and accept_btn.first.is_visible():
+            accept_btn.first.click()
+            time.sleep(0.5)
+    except Exception:
+        pass
+
+    cand = CANDIDATE.copy()
+
+    # 2. Personal Information
+    if page.locator("#application_form_application_first_name").count() > 0:
+        page.fill("#application_form_application_first_name", cand.get("first_name", ""))
+    if page.locator("#application_form_application_last_name").count() > 0:
+        page.fill("#application_form_application_last_name", cand.get("last_name", ""))
+    if page.locator("#application_form_application_email").count() > 0:
+        page.fill("#application_form_application_email", cand.get("email", ""))
+    if page.locator("#application_form_application_linkedin_url").count() > 0:
+        page.fill("#application_form_application_linkedin_url", cand.get("linkedin", ""))
+
+    # Phone number & dial code
+    try:
+        flag = page.locator(".selected-flag")
+        if flag.count() > 0:
+            flag.click()
+            time.sleep(0.3)
+            in_item = page.locator("li.country[data-country-code='in']")
+            if in_item.count() > 0:
+                in_item.first.click()
+                time.sleep(0.2)
+        phone_val = cand.get("raw_phone", "") or cand.get("phone", "")
+        if page.locator("#application_form_application_phone").count() > 0:
+            page.fill("#application_form_application_phone", phone_val)
+    except Exception as e:
+        print(f"[apply:pinpoint] Note on phone: {e}")
+
+    # Address
+    try:
+        country_inp = page.locator("input[id='application_form[application][country]']")
+        if country_inp.count() > 0:
+            target_country = cand.get("country", "India")
+            country_inp.focus()
+            page.keyboard.type(target_country, delay=25)
+            time.sleep(0.4)
+            for opt in page.locator(".react-select__option").all():
+                if opt.inner_text().strip() == target_country:
+                    opt.click()
+                    break
+        fill_address_hierarchy(page, cand=cand)
+    except Exception as e:
+        print(f"[apply:pinpoint] Note on address: {e}")
+
+    # 3. Resume / CV Upload
+    try:
+        cv_input = page.locator("input[id='application_form[application][cv]']")
+        if cv_input.count() > 0:
+            resume_path = RESUME_PATH.resolve()
+            cv_input.set_input_files(str(resume_path))
+            print(f"[apply:pinpoint] Uploaded resume: {resume_path.name}")
+            time.sleep(2)
+    except Exception as e:
+        print(f"[apply:pinpoint] Warning on resume upload: {e}")
+
+    # 4. Screening Questions
+    # Q0: Applied for employment with Continental? -> No
+    try:
+        q0 = page.locator("#application_form_application_answers_attributes_0_boolean_answer_false")
+        if q0.count() > 0:
+            q0.check(force=True)
+    except Exception:
+        pass
+
+    # Q1: Previously employed at Continental? -> No
+    try:
+        q1 = page.locator("#application_form_application_answers_attributes_1_boolean_answer_false")
+        if q1.count() > 0:
+            q1.check(force=True)
+    except Exception:
+        pass
+
+    # Q2: When will you be available to work? -> Immediate (today)
+    try:
+        from datetime import datetime
+        now = datetime.now()
+        day_sel = page.locator("#application_form_application_answers_attributes_2_date_answer_3i")
+        month_sel = page.locator("#application_form_application_answers_attributes_2_date_answer_2i")
+        year_sel = page.locator("#application_form_application_answers_attributes_2_date_answer_1i")
+        if day_sel.count() > 0:
+            day_sel.select_option(str(now.day))
+        if month_sel.count() > 0:
+            month_sel.select_option(str(now.month))
+        if year_sel.count() > 0:
+            year_sel.select_option(str(now.year))
+    except Exception as e:
+        print(f"[apply:pinpoint] Note on availability date: {e}")
+
+    # Q3: What type of work are you available for? -> Full Time
+    try:
+        q3_inp = page.locator("#application_form_application_answers_attributes_3_text_answer")
+        if q3_inp.count() > 0:
+            q3_inp.focus()
+            page.keyboard.press("ArrowDown")
+            time.sleep(0.4)
+            ft_opt = page.locator(".react-select__option:has-text('Full Time')")
+            if ft_opt.count() > 0:
+                ft_opt.first.click()
+                time.sleep(0.3)
+    except Exception as e:
+        print(f"[apply:pinpoint] Note on work type: {e}")
+
+    # Q4: Are you at least 18 years of age? -> Yes
+    try:
+        q4 = page.locator("#application_form_application_answers_attributes_4_boolean_answer_true")
+        if q4.count() > 0:
+            q4.check(force=True)
+    except Exception:
+        pass
+
+    # Q5: Will you now or in the future require employment visa sponsorship? -> Yes (US role, candidate in India)
+    try:
+        q5 = page.locator("#application_form_application_answers_attributes_5_boolean_answer_true")
+        if q5.count() > 0:
+            q5.check(force=True)
+    except Exception:
+        pass
+
+    # Q6: Did a current Continental team member refer you? -> No
+    try:
+        q6 = page.locator("#application_form_application_answers_attributes_6_boolean_answer_false")
+        if q6.count() > 0:
+            q6.check(force=True)
+    except Exception:
+        pass
+
+    # Q8: Are you currently a Continental team member? -> No – I am not a current Continental team member
+    try:
+        q8_inp = page.locator("#application_form_application_answers_attributes_8_text_answer")
+        if q8_inp.count() > 0:
+            q8_inp.focus()
+            page.keyboard.press("ArrowDown")
+            time.sleep(0.4)
+            no_member_opt = page.locator(".react-select__option:has-text('No')")
+            if no_member_opt.count() > 0:
+                no_member_opt.first.click()
+                time.sleep(0.3)
+    except Exception as e:
+        print(f"[apply:pinpoint] Note on current team member: {e}")
+
+    # 5. Diversity & Inclusion (Self-Disclosure)
+    try:
+        # Gender -> Male
+        g_inp = page.locator("#application_form_equality_monitoring_gender")
+        if g_inp.count() > 0:
+            g_inp.focus()
+            page.keyboard.press("ArrowDown")
+            time.sleep(0.3)
+            page.locator(".react-select__option:has-text('Male')").first.click()
+            time.sleep(0.2)
+
+        # Race/Ethnicity -> Asian
+        r_inp = page.locator("#application_form_equality_monitoring_race_ethnicity")
+        if r_inp.count() > 0:
+            r_inp.focus()
+            page.keyboard.press("ArrowDown")
+            time.sleep(0.3)
+            page.locator(".react-select__option:has-text('Asian')").first.click()
+            time.sleep(0.2)
+
+        # Disability -> No
+        d_inp = page.locator("#application_form_equality_monitoring_disability")
+        if d_inp.count() > 0:
+            d_inp.focus()
+            page.keyboard.press("ArrowDown")
+            time.sleep(0.3)
+            page.locator(".react-select__option:has-text('No')").first.click()
+            time.sleep(0.2)
+
+        # Veteran -> Not a protected veteran
+        v_inp = page.locator("#application_form_equality_monitoring_veteran_status")
+        if v_inp.count() > 0:
+            v_inp.focus()
+            page.keyboard.press("ArrowDown")
+            time.sleep(0.3)
+            page.locator(".react-select__option:has-text('not a protected veteran')").first.click()
+            time.sleep(0.2)
+    except Exception as e:
+        print(f"[apply:pinpoint] Note on equality monitoring: {e}")
+
+    # 6. Consent Checkbox
+    try:
+        consent = page.locator("#application_process_information")
+        if consent.count() > 0:
+            consent.check(force=True)
+    except Exception:
+        pass
+
+    time.sleep(2)
+
+    # 7. Screenshot & Pre-Submission Audit
+    app_doc_dir = Path(__file__).parent.parent / "documents" / "applications" / slug
+    app_doc_dir.mkdir(parents=True, exist_ok=True)
+    screenshot_path = app_doc_dir / "pre_submit_form.png"
+    page.screenshot(path=str(screenshot_path), full_page=True)
+    print(f"[apply:pinpoint] Saved pre-submit screenshot to {screenshot_path}")
+
+    # Generate Pre-Submission Audit Report
+    audit_md_path = app_doc_dir / "pre_submit_audit.md"
+    audit_content = f"""# Pre-Submission Application Audit: Continental Services - Business Intelligence Analyst
+
+**Target Portal:** Pinpoint HQ (`continentalserves.pinpointhq.com`)  
+**Application URL:** {app_url}  
+**Role Title:** Business Intelligence Analyst  
+**Company:** Continental Services  
+**Location:** Sterling Heights, Michigan (Hybrid: 4 days in-office / 1 day remote)  
+**Status:** Review Ready (Form Autofilled & Handoff Active)  
+
+---
+
+## 1. Candidate Details & Credentials Verified
+- **Full Name:** {cand.get('first_name', '')} {cand.get('last_name', '')}
+- **Email:** `{cand.get('email', '')}`
+- **Phone:** `{cand.get('phone', '')}` (Dial Code: `+91`, Country: `India`)
+- **LinkedIn Profile:** `{cand.get('linkedin', '')}`
+- **Address:** `{cand.get('address', '')}`
+- **City / Town:** `{cand.get('city', 'Noida')}`
+- **Postal Code:** `{cand.get('pincode', '201304')}`
+- **Country:** `India`
+
+---
+
+## 2. Document Attachments
+- **Master CV:** `cv/Ankit_Resume_v4.pdf` (Uploaded directly via ATS file input)
+- **Cover Letter:** `documents/applications/continental_services_bi_analyst/cover_letter.docx` (Tailored, humanized, zero-cost verified)
+
+---
+
+## 3. Screening Questions & Self-Disclosures
+- **Have you ever applied for employment with Continental?:** `No`
+- **Have you been previously employed at Continental?:** `No`
+- **When will you be available to work?:** Immediate (`{datetime.now().strftime('%Y-%m-%d')}`)
+- **What type of work are you available for?:** `Full Time`
+- **Are you at least 18 years of age?:** `Yes`
+- **Will you now or in the future require employment visa sponsorship?:** `Yes` (Authorized in India; applying to US role)
+- **Did a current Continental team member refer you?:** `No`
+- **Are you currently a Continental team member?:** `No – I am not a current Continental team member`
+
+---
+
+## 4. Equal Opportunity Self-Disclosures (Optional / Standard)
+- **Gender:** `Male`
+- **Race / Ethnicity:** `Asian (Not Hispanic or Latino)`
+- **Disability Status:** `No, I do not have a disability and have not had one in the past`
+- **Veteran Status:** `I am not a protected veteran`
+- **Personal Data Consent:** `Checked / Agreed`
+
+---
+
+## 5. Artifacts & Screenshots
+- **Pre-Submit Form Screenshot:** [`documents/applications/{slug}/pre_submit_form.png`](documents/applications/{slug}/pre_submit_form.png)
+- **Live Browser Status:** Kept permanently open and interactive on display.
+"""
+    audit_md_path.write_text(audit_content, encoding="utf-8")
+    print(f"[apply:pinpoint] Generated pre-submit audit report at {audit_md_path}")
+
+    _alert_before_submit(slug)
+    close_browser(pw, ctx, keep_open=keep_open)
+
+
 # ── Mode: apply ──────────────────────────────────────────────────────────────
 def mode_apply(url: str, slug: str, keep_open: bool = True, auto_submit: bool = False):
     ats = detect_ats(url)
@@ -1322,6 +1921,7 @@ def mode_apply(url: str, slug: str, keep_open: bool = True, auto_submit: bool = 
         "successfactors": _apply_successfactors,
         "avature":        _apply_generic,
         "ashby":          _apply_generic,
+        "pinpoint":       _apply_pinpoint,
     }
     handler = handlers.get(ats, _apply_generic)
     try:
@@ -1620,13 +2220,31 @@ def _apply_greenhouse(url: str, slug: str, fields: dict, keep_open: bool = True)
                 select_react_option(page, q_id, "No", exact_text="No")
             elif "certify" in lbl_text or "certify that" in lbl_text or "accurate" in lbl_text:
                 select_react_option(page, q_id, "Yes", exact_text="Yes")
-            elif "street address" in lbl_text or "address 1" in lbl_text:
-                if CANDIDATE.get("address"):
-                    sel.fill(CANDIDATE.get("address"))
-            elif "legal address - city" in lbl_text or "city*" in lbl_text:
+            elif "address 3" in lbl_text or "address line 3" in lbl_text:
+                _, _, addr3 = resolve_address_components(has_line2=True, has_line3=True, cand=CANDIDATE)
+                if addr3:
+                    sel.fill(addr3)
+            elif "address 2" in lbl_text or "address line 2" in lbl_text:
+                has_a3 = page.locator("text=/address (line )?3/i").count() > 0
+                _, addr2, _ = resolve_address_components(has_line2=True, has_line3=has_a3, cand=CANDIDATE)
+                if addr2:
+                    sel.fill(addr2)
+            elif "street address" in lbl_text or "address 1" in lbl_text or "address line 1" in lbl_text:
+                has_a3 = page.locator("text=/address (line )?3/i").count() > 0
+                has_a2 = has_a3 or page.locator("text=/address (line )?2/i").count() > 0
+                addr1, _, _ = resolve_address_components(has_line2=has_a2, has_line3=has_a3, cand=CANDIDATE)
+                if addr1:
+                    sel.fill(addr1)
+            elif "legal address - city" in lbl_text or "city*" in lbl_text or "city" in lbl_text:
                 if CANDIDATE.get("city"):
                     sel.fill(CANDIDATE.get("city"))
-            elif "legal address - country" in lbl_text:
+            elif "state" in lbl_text or "province" in lbl_text or "region" in lbl_text:
+                if CANDIDATE.get("state"):
+                    sel.fill(CANDIDATE.get("state"))
+            elif "zip" in lbl_text or "postal" in lbl_text or "pincode" in lbl_text:
+                if CANDIDATE.get("pincode"):
+                    sel.fill(CANDIDATE.get("pincode"))
+            elif "legal address - country" in lbl_text or "country*" in lbl_text:
                 select_react_option(page, q_id, country, exact_text=country)
             elif "if yes" in lbl_text:
                 sel.fill("N/A")

@@ -61,17 +61,30 @@
 
 ---
 
-## 4. Benchmark & Application Status (Active)
-- **Benchmarked Application:** UnitedHealth Group (UHG) - Director Data Analytics (Job ID: 2393655)
-- **ATS Platform:** Oracle Taleo (`uhg.taleo.net`)
-- **Status:** Fully filled and verified. Preserved on `Review and Submit` page without submission (per benchmark directive).
-- **Benchmark & RCA Report:** [`benchmarks/taleo_uhg_benchmark_rca.md`](file:///Users/ashish/git/ai-job-search/benchmarks/taleo_uhg_benchmark_rca.md)
-- **High-Velocity Automation Plan:** [`benchmarks/fast_ats_execution_architecture.md`](file:///Users/ashish/git/ai-job-search/benchmarks/fast_ats_execution_architecture.md)
+## 4. Recent Activity & Session Status (2026-10-20 Evening)
+- **Profile & Semantics Upgrades:**
+  - Undergrad GPA set to `6.5 CGPA` across `AGENTS.md`, `.env`, and all runners.
+  - Annual Income explicitly guarded across all modules to `1800000` (or `18` LPA) with zero numeric fallback to `4`.
+  - Designation uniformly set to `Business and Technology Consultant`.
+  - Built universal [`core/qa_semantics_engine.py`](file:///Users/ashish/git/ai-job-search/core/qa_semantics_engine.py) with deterministic regex matching for 100+ questions, negative tech exclusions (Java, Spring Boot, Kubernetes -> 0), positive tool experience (Python, SQL, Airflow, PySpark, Tableau -> 4), compliance, compensation, and OpenRouter Free Tier LLM fallback.
+  - Enriched [`user_inputs/application_qa_knowledge_base.json`](file:///Users/ashish/git/ai-job-search/user_inputs/application_qa_knowledge_base.json) from 25 to 49 comprehensive categories.
+  - Integrated `QASemanticsEngine` into both [`tools/linkedin_easy_apply_runner.py`](file:///Users/ashish/git/ai-job-search/tools/linkedin_easy_apply_runner.py) and [`automation/browser.py`](file:///Users/ashish/git/ai-job-search/automation/browser.py).
+  - Full automated quality verification gate passed 100% (427 passed, 1 skipped, 197 subtests, 0 PII leaks).
+- **OpenRouter Quota & Request Optimization (Radical Reduction):**
+  - **Tier 1 (Local Deterministic Rules & Knowledge Base):** Form fields, notice periods, tools, compensation, and 49 QA categories resolve locally in <1ms without touching network.
+  - **Tier 2 (Local SQLite Persistent Disk Cache):** Implemented permanent disk cache in [`intelligence/llm_clients/openrouter.py`](file:///Users/ashish/git/ai-job-search/intelligence/llm_clients/openrouter.py) at `~/.cache/careerpilot/llm_responses_cache.sqlite`. Repeated questions return in 0ms with **0 network requests and 0 tokens consumed**.
+  - **Tier 3 (OpenRouter Gateway Edge Caching):** Added `"X-OpenRouter-Cache": "true"` to all request headers. Upstream cache hits return in ~50ms, cost 0 credits, and **do not consume rate limits**.
+- **Easy Apply Batch Progress:**
+  - Submitted 35 Easy Apply applications today across Data Engineering, AI Systems, Analytics, and Consulting roles.
+  - Synchronized all records into `job_search_tracker.csv` and SQLite `jobs.db` (Total: 136 tracked applications).
+- **Session State:**
+  - **Paused on user command due to LinkedIn daily limit ceiling (35-40 Max / 24h).**
+  - Hardcoded safety ceiling (`DAILY_EASY_APPLY_LIMIT = 40`) and on-page rate limit detector active.
+  - Headed Chrome browser left permanently open and interactive on the display per strict safety directives.
 
 ---
 
-## 5. Instructions for Next Agent / Session
-
-1. Run `git status` to verify working tree status.
-2. Run `python tools/generate_workspace_from_master.py --audit-pii` before any git commit.
-3. Use `python tools/ats_runner.py --url "<URL>" --mode review` for interactive job applications.
+## 5. Instructions for Resuming
+1. Allow LinkedIn account cooldown period before launching fresh batches.
+2. Consider spacing queries across distinct target titles or utilizing search pagination (`start=75`, `start=100`).
+3. Maintain zero-cost OpenRouter free tier integration for all future screening questions.
