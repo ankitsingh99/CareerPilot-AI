@@ -41,13 +41,16 @@ def export_sqlite_to_postgres(db_path: Path = DEFAULT_DB_PATH, output_sql: Path 
 
     tables = ["jobs", "companies_mdm", "analyst_job_tracker_excel", "gcc_raw", "network_contacts", "job_applications", "semantic_memory"]
 
+    VALID_TABLES = {"jobs", "companies_mdm", "analyst_job_tracker_excel", "gcc_raw", "network_contacts", "job_applications", "semantic_memory"}
+    tables = [t for t in tables if t in VALID_TABLES]
+
     sql_statements = []
     sql_statements.append("-- PostgreSQL Database Export Dump for ai-job-search")
     sql_statements.append("-- Generated automatically from SQLite jobs.db\n")
 
     # 1. Create tables in PostgreSQL format
     for tbl in tables:
-        cursor.execute(f"SELECT sql FROM sqlite_master WHERE type='table' AND name='{tbl}';")
+        cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name=?;", (tbl,))
         row = cursor.fetchone()
         if row and row[0]:
             create_sql = row[0]
@@ -60,7 +63,7 @@ def export_sqlite_to_postgres(db_path: Path = DEFAULT_DB_PATH, output_sql: Path 
 
     # 2. Dump data rows
     for tbl in tables:
-        cursor.execute(f"PRAGMA table_info({tbl});")
+        cursor.execute(f"PRAGMA table_info(\"{tbl}\");")
         cols = [col[1] for col in cursor.fetchall()]
         if not cols:
             continue

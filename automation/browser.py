@@ -34,6 +34,12 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+
+# Ensure repo root is on sys.path
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 from playwright.sync_api import sync_playwright, Page
 
 # ── Candidate & Secret Loading ───────────────────────────────────────────────
@@ -1678,6 +1684,16 @@ def main():
     )
     args = parser.parse_args()
     keep_open = True  # Strict directive: NEVER close browser window
+
+    # SSRF Guard (Vibe-Check Category 6)
+    try:
+        from utils.ssrf_guard import validate_url
+        is_safe, reason = validate_url(args.url)
+        if not is_safe:
+            print(f"\n❌ [SSRF Guard: BLOCKED] Target URL '{args.url}' rejected: {reason}\n")
+            sys.exit(1)
+    except Exception as e:
+        pass
 
     slug = re.sub(r"[^a-z0-9]+", "_", args.role_name.lower())[:40]
     ats  = detect_ats(args.url)
