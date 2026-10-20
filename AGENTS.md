@@ -3,9 +3,9 @@ framework_version: 1.2.0
 template_type: universal_master_specification
 ---
 
-# Universal Master Instructions & Profile Template
+# CareerPilot AI - Universal Master Instructions & Profile Template
 
-This is the central master blueprint for the AI Job Search automation framework. It contains all operational instructions, behavioral directives, application workflows, and a candidate-agnostic profile template.
+This is the central master blueprint for CareerPilot AI (Autonomous Career Agent & Application Automation Framework). It contains all operational instructions, behavioral directives, application workflows, and a candidate-agnostic profile template.
 
 For any person using this tool:
 1. **Never commit personal identifiable information (PII) to git.**
