@@ -1,0 +1,48 @@
+# OpenRouter Zero-Cost Free Models Catalog
+# Generated: 2026-10-20 10:31:07 UTC
+# Total Active Free Models: 17
+# Update Frequency: Weekly (Scheduled via GitHub Actions & Antigravity Cron)
+# Zero-Cost Policy: $0.00 / prompt token, $0.00 / completion token (100% Free)
+
+========================================================================================
+MODEL ID                                       | CONTEXT   | NAME / PROVIDER
+========================================================================================
+cohere/north-mini-code:free                    |   256,000 | Cohere: North Mini Code (free) [Default]
+openrouter/free                                |   200,000 | Free Models Router
+dots-studio/dots-3-note-preview:free           |   512,000 | Dots Studio: Dots3-Note Preview (free)
+google/gemma-4-26b-a4b-it:free                 |   262,144 | Google: Gemma 4 26B A4B  (free)
+google/gemma-4-31b-it:free                     |   262,144 | Google: Gemma 4 31B (free)
+liquid/lfm-2.5-2.6b:free                       |    65,536 | LiquidAI: LFM2.5-2.6B (free)
+minimax/minimax-m3.1-flash:free                | 1,000,000 | MiniMax: MiniMax M3.1 Flash (free)
+nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free |   256,000 | NVIDIA: Nemotron 3 Nano Omni (free)
+nvidia/nemotron-3-super-120b-a12b:free         |   262,144 | NVIDIA: Nemotron 3 Super (free)
+nvidia/nemotron-3-ultra-550b-a55b:free         | 1,000,000 | NVIDIA: Nemotron 3 Ultra (free)
+nvidia/nemotron-3.5-lightning:free             | 1,000,000 | NVIDIA: Nemotron 3.5 Lightning (free)
+nvidia/nemotron-3.5-super-vl:free              | 1,000,000 | NVIDIA: Nemotron 3.5 Super VL (free)
+poolside/laguna-s-2.1:free                     |   262,144 | Poolside: Laguna S 2.1 (free)
+poolside/laguna-xs-2.1:free                    |   262,144 | Poolside: Laguna XS 2.1 (free)
+thinkingmachines/inkling-small:free            | 1,048,576 | Thinking Machines: Inkling Small (free)
+thinkingmachines/inkling:free                  | 1,048,576 | Thinking Machines: Inkling (free)
+xingchen-agi/xing4.0-29b-a4b:free              |   262,144 | XingChen: Xing4.0 29B A4B (free)
+========================================================================================
+
+# -----------------------------------------------------------------------------
+# PLAIN MODEL IDS LIST (For automation, scripts, and direct parsing):
+# -----------------------------------------------------------------------------
+cohere/north-mini-code:free
+openrouter/free
+dots-studio/dots-3-note-preview:free
+google/gemma-4-26b-a4b-it:free
+google/gemma-4-31b-it:free
+liquid/lfm-2.5-2.6b:free
+minimax/minimax-m3.1-flash:free
+nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
+nvidia/nemotron-3-super-120b-a12b:free
+nvidia/nemotron-3-ultra-550b-a55b:free
+nvidia/nemotron-3.5-lightning:free
+nvidia/nemotron-3.5-super-vl:free
+poolside/laguna-s-2.1:free
+poolside/laguna-xs-2.1:free
+thinkingmachines/inkling-small:free
+thinkingmachines/inkling:free
+xingchen-agi/xing4.0-29b-a4b:free

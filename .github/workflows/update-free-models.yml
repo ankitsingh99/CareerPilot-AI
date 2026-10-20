@@ -1,0 +1,38 @@
+name: Weekly OpenRouter Free Models Sync
+
+on:
+  schedule:
+    - cron: "0 0 * * 0" # 00:00 UTC every Sunday
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync-models:
+    name: Sync OpenRouter Free Models Catalog
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Sync free models catalog
+        run: |
+          python tools/sync_free_models.py
+
+      - name: Commit and push changes if updated
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet openrouter_free_models.txt; then
+            echo "openrouter_free_models.txt is already up to date. No changes to commit."
+          else
+            git add openrouter_free_models.txt
+            git commit -m "chore(models): weekly sync of OpenRouter free models catalog [skip ci]"
+            git push
+          fi

@@ -17,6 +17,7 @@ import re
 import sys
 import urllib.error
 import urllib.request
+import time
 from pathlib import Path
 
 _SECRETS_FILE = Path(__file__).parent.parent / ".candidate_secrets.json"
@@ -25,14 +26,131 @@ _ENV_VAR = "OPENROUTER_API_KEY"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_FREE_MODEL = "cohere/north-mini-code:free"
 
-FREE_MODELS_POOL = [
+DEFAULT_FALLBACK_FREE_MODELS = [
     "cohere/north-mini-code:free",
-    "poolside/laguna-s-2.1:free",
     "google/gemma-4-31b-it:free",
     "google/gemma-4-26b-a4b-it:free",
-    "qwen/qwen3.8-27b:free",
     "nvidia/nemotron-3.5-lightning:free",
+    "poolside/laguna-s-2.1:free",
+    "minimax/minimax-m3.1-flash:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
 ]
+
+# Mutable pool populated dynamically from OpenRouter live models catalog
+FREE_MODELS_POOL: list[str] = list(DEFAULT_FALLBACK_FREE_MODELS)
+
+_CACHE_FILE = Path.home() / ".cache" / "careerpilot" / "openrouter_free_models.json"
+_CACHE_TTL_SECONDS = 3600  # 1 hour
+_IN_MEMORY_CACHE: dict = {"timestamp": 0.0, "models": []}
+
+
+def is_free_model(model_name: str) -> bool:
+    """Return True if model is an authorized zero-cost endpoint."""
+    if not model_name:
+        return False
+    return model_name.endswith(":free") or model_name in ("openrouter/free", "auto", "any")
+
+
+def fetch_free_models(force_refresh: bool = False, timeout: int = 5) -> list[str]:
+    """Dynamically discover all active zero-cost (:free) models from OpenRouter API.
+
+    Queries OpenRouter's `/api/v1/models` endpoint to automatically detect all newly
+    listed and active free models, caching results for 1 hour to prevent redundant requests.
+    """
+    global FREE_MODELS_POOL
+    now = time.time()
+
+    # 1. Check in-memory cache
+    if (
+        not force_refresh
+        and _IN_MEMORY_CACHE.get("models")
+        and (now - _IN_MEMORY_CACHE.get("timestamp", 0) < _CACHE_TTL_SECONDS)
+    ):
+        return list(_IN_MEMORY_CACHE["models"])
+
+    # 2. Check disk cache
+    if not force_refresh and _CACHE_FILE.exists():
+        try:
+            cached_data = json.loads(_CACHE_FILE.read_text(encoding="utf-8"))
+            if now - cached_data.get("timestamp", 0) < _CACHE_TTL_SECONDS:
+                models = cached_data.get("models", [])
+                if models:
+                    _IN_MEMORY_CACHE["models"] = models
+                    _IN_MEMORY_CACHE["timestamp"] = cached_data["timestamp"]
+                    FREE_MODELS_POOL[:] = models
+                    return list(models)
+        except Exception:
+            pass
+
+    # 3. Live query OpenRouter models API
+    try:
+        req = urllib.request.Request(
+            f"{OPENROUTER_BASE_URL}/models",
+            headers={
+                "User-Agent": "CareerPilot-AI (Zero-Cost Free Model Discovery)",
+                "Accept": "application/json",
+            },
+        )
+        api_key = _load_key()
+        if api_key:
+            req.add_header("Authorization", f"Bearer {api_key}")
+
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            raw_models = data.get("data", [])
+
+        discovered: list[str] = []
+        for m in raw_models:
+            model_id = m.get("id", "")
+            # Strict Zero-Cost Directive: Must end with :free or be openrouter/free
+            if not (model_id.endswith(":free") or model_id == "openrouter/free"):
+                continue
+
+            # Verify zero-cost pricing
+            pricing = m.get("pricing", {})
+            prompt_cost = str(pricing.get("prompt", "0"))
+            completion_cost = str(pricing.get("completion", "0"))
+            if prompt_cost not in ("0", "0.0") or completion_cost not in ("0", "0.0"):
+                continue
+
+            # Exclude non-conversational/safety moderation classifiers
+            if any(term in model_id.lower() for term in ("content-safety", "moderation", "guard")):
+                continue
+
+            # Ensure text output capability if architecture is specified
+            arch = m.get("architecture", {})
+            out_modalities = arch.get("output_modalities", [])
+            modality = arch.get("modality", "")
+            if out_modalities and "text" not in out_modalities:
+                continue
+            if modality and "->text" not in modality:
+                continue
+
+            discovered.append(model_id)
+
+        if discovered:
+            _IN_MEMORY_CACHE["models"] = discovered
+            _IN_MEMORY_CACHE["timestamp"] = now
+            FREE_MODELS_POOL[:] = discovered
+
+            try:
+                _CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+                _CACHE_FILE.write_text(
+                    json.dumps({"timestamp": now, "models": discovered}, indent=2),
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
+            return list(discovered)
+    except Exception as exc:
+        print(f"[openrouter] Note: Could not fetch dynamic models list ({exc}). Using cached/fallback pool.")
+
+    return list(FREE_MODELS_POOL)
+
+
+def get_free_models(force_refresh: bool = False) -> list[str]:
+    """Return all currently available free models from OpenRouter."""
+    return fetch_free_models(force_refresh=force_refresh)
 
 
 def _load_key() -> str:
@@ -90,7 +208,7 @@ def ask(
     timeout: int = 60,
 ) -> str:
     """Send a token-optimized chat completion request to OpenRouter with zero-cost fallback."""
-    if not model.endswith(":free"):
+    if not is_free_model(model):
         raise ValueError(f"Strict Zero-Cost Violation: Model '{model}' is not a free-tier endpoint (:free).")
 
     api_key = _load_key()
@@ -110,12 +228,16 @@ def ask(
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
-    # Build candidate models list starting with requested model
-    candidate_models = [model] + [m for m in FREE_MODELS_POOL if m != model]
+    # Build candidate models list dynamically from live free models pool
+    available_pool = fetch_free_models()
+    if model in ("auto", "any"):
+        candidate_models = list(available_pool)
+    else:
+        candidate_models = [model] + [m for m in available_pool if m != model]
     last_error = None
 
     for current_model in candidate_models:
-        if not current_model.endswith(":free"):
+        if not is_free_model(current_model):
             continue
 
         print(f"\n[openrouter] 🤖 Model in use: '{current_model}' (Zero-Cost Free Tier)")
@@ -179,7 +301,7 @@ def ask_with_usage(
     timeout: int = 60,
 ) -> tuple[str, dict]:
     """Send request and return (content, usage_dict) for token quantification."""
-    if not model.endswith(":free"):
+    if not is_free_model(model):
         raise ValueError(f"Strict Zero-Cost Violation: Model '{model}' is not a free-tier endpoint (:free).")
 
     api_key = _load_key()
@@ -199,11 +321,15 @@ def ask_with_usage(
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
-    candidate_models = [model] + [m for m in FREE_MODELS_POOL if m != model]
+    available_pool = fetch_free_models()
+    if model in ("auto", "any"):
+        candidate_models = list(available_pool)
+    else:
+        candidate_models = [model] + [m for m in available_pool if m != model]
     last_error = None
 
     for current_model in candidate_models:
-        if not current_model.endswith(":free"):
+        if not is_free_model(current_model):
             continue
 
         print(f"\n[openrouter] 🤖 Model in use: '{current_model}' (Zero-Cost Free Tier)")
@@ -247,12 +373,24 @@ def ask_with_usage(
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="Token-Optimized OpenRouter Client")
+    parser = argparse.ArgumentParser(description="Token-Optimized OpenRouter Client (Zero-Cost Free Tier)")
     parser.add_argument("prompt", nargs="?", help="Prompt to send to OpenRouter")
-    parser.add_argument("--model", default=DEFAULT_FREE_MODEL, help="Free OpenRouter model endpoint")
+    parser.add_argument("--model", default=DEFAULT_FREE_MODEL, help="Free OpenRouter model endpoint or 'auto'/'any'")
     parser.add_argument("--json", action="store_true", help="Enforce JSON mode output")
     parser.add_argument("--max-tokens", type=int, default=1500, help="Max completion tokens")
+    parser.add_argument("--list-models", action="store_true", help="List all dynamically discovered free models from OpenRouter")
+    parser.add_argument("--refresh-models", action="store_true", help="Force refresh cached free models from OpenRouter API")
     args = parser.parse_args()
+
+    if args.list_models or args.refresh_models:
+        models = fetch_free_models(force_refresh=True)
+        print(f"\n[openrouter] Discovered {len(models)} Zero-Cost Free Models on OpenRouter:")
+        for idx, m in enumerate(models, 1):
+            star = " (default)" if m == DEFAULT_FREE_MODEL else ""
+            print(f"  {idx:2d}. {m}{star}")
+        print("\nAll models listed above cost $0.00 and comply with AGENTS.md Zero-Cost Directive.")
+        if not args.prompt:
+            sys.exit(0)
 
     if not args.prompt:
         parser.print_help()
