@@ -74,13 +74,13 @@
   - **Tier 1 (Local Deterministic Rules & Knowledge Base):** Form fields, notice periods, tools, compensation, and 49 QA categories resolve locally in <1ms without touching network.
   - **Tier 2 (Local SQLite Persistent Disk Cache):** Implemented permanent disk cache in [`intelligence/llm_clients/openrouter.py`](file:///Users/ashish/git/ai-job-search/intelligence/llm_clients/openrouter.py) at `~/.cache/careerpilot/llm_responses_cache.sqlite`. Repeated questions return in 0ms with **0 network requests and 0 tokens consumed**.
   - **Tier 3 (OpenRouter Gateway Edge Caching):** Added `"X-OpenRouter-Cache": "true"` to all request headers. Upstream cache hits return in ~50ms, cost 0 credits, and **do not consume rate limits**.
-- **Easy Apply Batch Progress:**
-  - Submitted 35 Easy Apply applications today across Data Engineering, AI Systems, Analytics, and Consulting roles.
-  - Synchronized all records into `job_search_tracker.csv` and SQLite `jobs.db` (Total: 136 tracked applications).
-- **Session State:**
-  - **Paused on user command due to LinkedIn daily limit ceiling (35-40 Max / 24h).**
-  - Hardcoded safety ceiling (`DAILY_EASY_APPLY_LIMIT = 40`) and on-page rate limit detector active.
-  - Headed Chrome browser left permanently open and interactive on the display per strict safety directives.
+- **Recent Applications (Direct ATS):**
+  - **Kuehne+Nagel:** Applied to *Integrated Logistics Senior Data Quality Engineer* (Req `KUNAGLOBAL18106EXTERNALENGLOBAL`, Gurgaon).
+  - Generated tailored cover letter via OpenRouter free model ([cover_KuehneNagel_SeniorDataQualityEngineer.md](file:///Users/ashish/git/ai-job-search/cover_letters/cover_KuehneNagel_SeniorDataQualityEngineer.md) and DOCX).
+  - Ran `tools/ats_runner.py` in persistent headed mode. Form pre-filled (Personal info, address, experience, education, CV uploaded, consent checkboxes ticked).
+  - Headed browser held permanently open for final human verification and submission.
+  - Synchronized record into `job_search_tracker.csv` and `jobs.db` (Total: 137 applications).
+  - Generated pre-submission audit in [pre_submit_audit.md](file:///Users/ashish/git/ai-job-search/documents/applications/KuehneNagel_SeniorDataQualityEngineer/pre_submit_audit.md).
 
 ---
 

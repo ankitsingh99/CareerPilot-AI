@@ -289,7 +289,7 @@ def open_persistent_browser():
             headless=False,
             no_viewport=True,
             user_agent=USER_AGENT,
-            args=["--start-maximized", "--no-default-browser-check", "--remote-debugging-port=9222"],
+            args=["--start-maximized", "--no-default-browser-check"],
         )
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         return pw, ctx, page
@@ -874,6 +874,8 @@ def resolve_address_components(has_line2: bool = False, has_line3: bool = False,
     if has_line2:
         l1 = cand.get("address_2_line1") or (", ".join(parts[:3]) if len(parts) >= 3 else full_addr)
         l2 = cand.get("address_2_line2") or (", ".join(parts[3:]) if len(parts) >= 4 else "")
+        if "sector 131" in full_addr.lower() and "sector 131" in l2.lower():
+            l2 = "Sector 131"
         return l1.strip(), l2.strip(), ""
 
     return full_addr, "", ""
@@ -890,57 +892,66 @@ def fill_address_hierarchy(page: Page, cand: dict = None) -> dict:
 
     filled = {}
 
-    # 1. Detect Line 3
-    line3_selectors = [
-        "#address3", "#address_3", "input[id*='address3' i]", "input[id*='address_3' i]",
-        "input[id*='address_line_3' i]", "input[name*='address3' i]", "input[name*='address_3' i]",
-        "input[name*='address_line_3' i]", "input[placeholder*='address 3' i]", "input[placeholder*='address line 3' i]"
-    ]
-    el_line3 = None
-    for sel in line3_selectors:
-        try:
-            el = page.query_selector(sel)
-            if el and el.is_visible() and el.is_enabled():
-                el_line3 = el
-                break
-        except Exception:
-            pass
-
-    # 2. Detect Line 2
-    line2_selectors = [
-        "#address2", "#address_2", "input[id*='address2' i]", "input[id*='address_2' i]",
-        "input[id*='address_line_2' i]", "input[name*='address2' i]", "input[name*='address_2' i]",
-        "input[name*='address_line_2' i]", "input[placeholder*='address 2' i]", "input[placeholder*='address line 2' i]",
-        "input[placeholder*='apartment' i]", "input[placeholder*='apt' i]", "input[placeholder*='suite' i]",
-        "input[placeholder*='unit' i]", "input[id*='suite' i]", "input[name*='suite' i]", "input[id*='apt' i]"
-    ]
-    el_line2 = None
-    for sel in line2_selectors:
-        try:
-            el = page.query_selector(sel)
-            if el and el.is_visible() and el.is_enabled():
-                el_line2 = el
-                break
-        except Exception:
-            pass
-
-    # 3. Detect Line 1
-    line1_selectors = [
-        "#address1", "#address_1", "input[id*='address1' i]", "input[id*='address_1' i]",
-        "input[id*='address_line_1' i]", "input[name*='address1' i]", "input[name*='address_1' i]",
-        "input[name*='address_line_1' i]", "input[placeholder*='address 1' i]", "input[placeholder*='address line 1' i]",
-        "input[id='address' i]", "input[name='address' i]", "input[id*='street' i]", "input[name*='street' i]",
-        "input[placeholder*='street' i]", "input[placeholder='Address' i]", "input[id*='street_address' i]"
-    ]
     el_line1 = None
-    for sel in line1_selectors:
-        try:
-            el = page.query_selector(sel)
-            if el and el.is_visible() and el.is_enabled():
-                el_line1 = el
-                break
-        except Exception:
-            pass
+    el_line2 = None
+    el_line3 = None
+
+    # 0. Paired Address detection (e.g. #address and #address1 on Phenom / SuccessFactors)
+    el_addr = page.query_selector("input#address")
+    el_addr1 = page.query_selector("input#address1")
+    if el_addr and el_addr1 and el_addr.is_visible() and el_addr1.is_visible():
+        el_line1 = el_addr
+        el_line2 = el_addr1
+
+    # 1. Detect Line 3
+    if not el_line1:
+        line3_selectors = [
+            "#address3", "#address_3", "input[id*='address3' i]", "input[id*='address_3' i]",
+            "input[id*='address_line_3' i]", "input[name*='address3' i]", "input[name*='address_3' i]",
+            "input[name*='address_line_3' i]", "input[placeholder*='address 3' i]", "input[placeholder*='address line 3' i]"
+        ]
+        for sel in line3_selectors:
+            try:
+                el = page.query_selector(sel)
+                if el and el.is_visible() and el.is_enabled():
+                    el_line3 = el
+                    break
+            except Exception:
+                pass
+
+        # 2. Detect Line 2
+        line2_selectors = [
+            "#address2", "#address_2", "input[id*='address2' i]", "input[id*='address_2' i]",
+            "input[id*='address_line_2' i]", "input[name*='address2' i]", "input[name*='address_2' i]",
+            "input[name*='address_line_2' i]", "input[placeholder*='address 2' i]", "input[placeholder*='address line 2' i]",
+            "input[placeholder*='apartment' i]", "input[placeholder*='apt' i]", "input[placeholder*='suite' i]",
+            "input[placeholder*='unit' i]", "input[id*='suite' i]", "input[name*='suite' i]", "input[id*='apt' i]"
+        ]
+        for sel in line2_selectors:
+            try:
+                el = page.query_selector(sel)
+                if el and el.is_visible() and el.is_enabled():
+                    el_line2 = el
+                    break
+            except Exception:
+                pass
+
+        # 3. Detect Line 1
+        line1_selectors = [
+            "#address1", "#address_1", "input[id*='address1' i]", "input[id*='address_1' i]",
+            "input[id*='address_line_1' i]", "input[name*='address1' i]", "input[name*='address_1' i]",
+            "input[name*='address_line_1' i]", "input[placeholder*='address 1' i]", "input[placeholder*='address line 1' i]",
+            "input[id='address' i]", "input[name='address' i]", "input[id*='street' i]", "input[name*='street' i]",
+            "input[placeholder*='street' i]", "input[placeholder='Address' i]", "input[id*='street_address' i]"
+        ]
+        for sel in line1_selectors:
+            try:
+                el = page.query_selector(sel)
+                if el and el.is_visible() and el.is_enabled():
+                    el_line1 = el
+                    break
+            except Exception:
+                pass
 
     has_line3 = (el_line3 is not None)
     has_line2 = (el_line2 is not None) or has_line3
@@ -1073,11 +1084,54 @@ def fill_address_hierarchy(page: Page, cand: dict = None) -> dict:
 # ── Common fill & upload helpers ─────────────────────────────────────────────
 def _fill_common(page: Page):
     """Autofill standard fields across all ATS types."""
+    # ── Phone Country Code Selection (Prioritize before Phone Number) ───────────
+    has_cc = False
+    for cc_sel in [
+        "#phoneCountryCode", "select#phoneCountryCode", "select[id*='phoneCountryCode' i]",
+        "select[name*='phoneCountryCode' i]", "select[id*='countryCode' i]", "select[name*='countryCode' i]"
+    ]:
+        try:
+            cc_el = page.query_selector(cc_sel)
+            if cc_el and cc_el.is_visible():
+                has_cc = True
+                # Select India (+91) specifically (reject British Indian Ocean Territory)
+                selected = False
+                try:
+                    cc_el.select_option(value="19943")
+                    selected = True
+                except Exception:
+                    pass
+                if not selected:
+                    try:
+                        cc_el.select_option(label="India (+91)")
+                        selected = True
+                    except Exception:
+                        pass
+                if not selected:
+                    for opt in cc_el.query_selector_all("option"):
+                        txt = opt.inner_text().strip()
+                        if "british indian" in txt.lower():
+                            continue
+                        if "+91" in txt or re.search(r"\bindia\b", txt, re.IGNORECASE):
+                            val = opt.get_attribute("value")
+                            if val:
+                                cc_el.select_option(value=val)
+                                selected = True
+                                break
+                if selected:
+                    print(f"[fill:country_code] Selected India (+91) via {cc_sel}")
+                break
+        except Exception:
+            pass
+
+    # Use raw 10-digit phone if country code selector exists on page
+    phone_val = CANDIDATE["raw_phone"] if has_cc else CANDIDATE["phone"]
+
     mapping = {
         "first":    CANDIDATE["first_name"],
         "last":     CANDIDATE["last_name"],
         "email":    CANDIDATE["email"],
-        "phone":    CANDIDATE["phone"],
+        "phone":    phone_val,
         "linkedin": CANDIDATE["linkedin"],
     }
     filled = []
@@ -1102,6 +1156,22 @@ def _fill_common(page: Page):
                 pass
     if filled:
         print(f"[fill] Auto-filled: {', '.join(filled)}")
+
+    # ── Mandatory Consent & Terms & Privacy Checkboxes ───────────────────────
+    for chk_sel in [
+        "#custExternalConsentA", "#agreeToPrivacyStatement",
+        "input[type='checkbox'][id*='consent' i]", "input[type='checkbox'][id*='privacy' i]",
+        "input[type='checkbox'][id*='terms' i]", "input[type='checkbox'][id*='agree' i]",
+        "input[type='checkbox'][id*='statement' i]", "input[type='checkbox'][name*='consent' i]",
+        "input[type='checkbox'][name*='privacy' i]", "input[type='checkbox'][name*='terms' i]"
+    ]:
+        try:
+            for chk in page.query_selector_all(chk_sel):
+                if chk.is_visible() and not chk.is_checked():
+                    chk.check(force=True)
+                    print(f"[consent] Checked required consent/privacy checkbox: {chk.get_attribute('id') or chk_sel}")
+        except Exception:
+            pass
 
     # ── Hierarchical Address & Location ──────────────────────────────────────
     fill_address_hierarchy(page, cand=CANDIDATE)
@@ -1452,10 +1522,19 @@ def _fill_city(page: Page):
             pass
 
 
-def _upload_resume(page: Page) -> bool:
-    """Attempt resume upload on common file-input selectors with Taleo table sanitization."""
+def _upload_resume(page: Page, slug: str = "") -> bool:
+    """Attempt resume upload on common file-input selectors, with dual cover letter upload and Taleo table sanitization."""
     resume = str(RESUME_PATH.resolve())
-    
+    cover_letter = None
+    if slug:
+        candidates = list(COVER_LETTERS_DIR.glob(f"*{slug}*.docx")) + list(COVER_LETTERS_DIR.glob(f"*{slug}*.md"))
+        if candidates:
+            cover_letter = str(candidates[0].resolve())
+    if not cover_letter:
+        recent_letters = sorted(COVER_LETTERS_DIR.glob("*.docx"), key=os.path.getmtime, reverse=True)
+        if recent_letters:
+            cover_letter = str(recent_letters[0].resolve())
+
     # 1. Clear any attachment comment inputs to avoid leaking text/email
     for comment_sel in [
         "input[id*='AttachedFilesBlock-comment']",
@@ -1468,6 +1547,20 @@ def _upload_resume(page: Page) -> bool:
                 c_el.fill("")
         except Exception:
             pass
+
+    # 2. Check for dual/multiple file inputs (e.g. CV Upload + Additional Documents / Cover Letter)
+    file_inputs = page.query_selector_all("input[type='file']")
+    if len(file_inputs) >= 2:
+        try:
+            file_inputs[0].set_input_files(resume)
+            print("[upload] Master Resume uploaded to primary file input #0")
+            time.sleep(1)
+            if cover_letter:
+                file_inputs[1].set_input_files(cover_letter)
+                print(f"[upload] Tailored Cover Letter uploaded to secondary file input #1: {Path(cover_letter).name}")
+            return True
+        except Exception as e:
+            print(f"[upload] Error in dual file upload: {e}")
 
     uploaded = False
     for sel in [
@@ -1520,7 +1613,7 @@ def _upload_resume(page: Page) -> bool:
         except Exception:
             pass
 
-    # 2. Sanitize Taleo Attachments Table if present
+    # 3. Sanitize Taleo Attachments Table if present
     _sanitize_taleo_attachments(page)
     return uploaded
 
@@ -2004,7 +2097,7 @@ def _apply_generic(url: str, slug: str, fields: dict = None, keep_open: bool = T
     for step in range(1, 10):
         time.sleep(2)
         _fill_common(page)
-        _upload_resume(page)
+        _upload_resume(page, slug)
         _handle_relevant_files(page)
         page.screenshot(path=str(SCRATCH_DIR / f"{slug}_step_{step}.png"))
 

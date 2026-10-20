@@ -309,10 +309,37 @@ class QASemanticsEngine:
                         if pref in opt.lower():
                             return opt.strip()
 
+            # Country Code / Phone Dial Code options
+            if any(k in lbl for k in ["country code", "dial code", "phonecountrycode", "phone code", "calling code"]):
+                for opt in options:
+                    opt_clean = opt.strip()
+                    if "british indian" in opt_clean.lower():
+                        continue
+                    if re.search(r"\b(india\b.*\+91|\+91\b|india\s*\(\+91\))", opt_clean, re.IGNORECASE) or opt_clean in ["India (+91)", "India", "+91"]:
+                        return opt_clean
+
+            # Language Proficiency options
+            if any(k in lbl for k in ["language", "proficient in", "languages are you proficient", "languages"]):
+                for opt in options:
+                    if opt.strip().lower() in ["select", "select an option", "please select", "none", ""]:
+                        continue
+                    if "english" in opt.lower():
+                        return opt.strip()
+
+            # Gender options
+            if any(k in lbl for k in ["gender", "sex"]):
+                for opt in options:
+                    if opt.strip().lower() == "male":
+                        return opt.strip()
+
             # Location / Country options
-            for opt in options:
-                if cand["city"].lower() in opt.lower() or "india" in opt.lower():
-                    return opt.strip()
+            if any(k in lbl for k in ["country", "location", "citizenship", "nationality"]):
+                for opt in options:
+                    opt_clean = opt.strip()
+                    if "british indian" in opt_clean.lower():
+                        continue
+                    if cand["city"].lower() in opt_clean.lower() or re.search(r"\bindia\b", opt_clean, re.IGNORECASE):
+                        return opt_clean
 
         # ── 1. TITLE / DESIGNATION OVERRIDE ──────────────────────────────────────
         if any(k in lbl for k in [
@@ -451,6 +478,8 @@ class QASemanticsEngine:
             ]
             for pref in preferred_matches:
                 for opt in options:
+                    if "british indian" in opt.lower():
+                        continue
                     if opt.strip().lower().startswith(pref):
                         return opt.strip()
 
