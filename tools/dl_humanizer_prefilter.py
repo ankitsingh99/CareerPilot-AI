@@ -153,10 +153,21 @@ FACTS:
         t_engine = TurnitoutEngine(seed=42)
         humanized_res = t_engine.humanize(combined_raw, aggressiveness=0.7)
         print(f"[Turnitout Post-Pass] Watermarks purged: {humanized_res['watermarks_purged']} | Transforms: {humanized_res['total_transforms']} | ZipPy Entropy: {humanized_res['final_entropy']['entropy_score']}")
-        return humanized_res['humanized_text']
+        final_candidate = humanized_res['humanized_text']
     except Exception as e:
         print(f"[Turnitout Post-Pass Warning] Fallback to raw: {e}")
-        return combined_raw
+        final_candidate = combined_raw
+
+    # Two-Tier Integrity & Proofreading Pass (Local Linter + OpenRouter Free Proofreader)
+    try:
+        from parsers.linter import lint_and_format
+        lint_res = lint_and_format(final_candidate, proofread_llm=True, role_title=role_title, company=company)
+        if not lint_res["passed"]:
+            print(f"[Cover Letter Guard] Warning: Detected issues in draft: {lint_res['violations']}")
+        return lint_res["clean_text"]
+    except Exception as e:
+        print(f"[Cover Letter Guard Warning] Linter pass failed: {e}")
+        return final_candidate
 
 
 if __name__ == "__main__":

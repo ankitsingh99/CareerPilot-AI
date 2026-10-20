@@ -191,7 +191,7 @@ def update_candidate_preferences(config: Dict[str, str], clean_mode: bool = Fals
         return
 
     text = pref_file.read_text(encoding="utf-8")
-    env_vars = load_env_variables()
+    env_vars = config or get_candidate_config()
     phone = env_vars.get("CANDIDATE_RAW_PHONE") or env_vars.get("CANDIDATE_PHONE")
     email = env_vars.get("CANDIDATE_EMAIL")
     address = env_vars.get("CANDIDATE_ADDRESS")
@@ -236,6 +236,35 @@ def audit_workspace_pii() -> bool:
         first_segment = candidate_address.split(",")[0].strip()
         if len(first_segment) >= 4:
             universal_sensitive_patterns.append(("Candidate Street Address", re.compile(re.escape(first_segment), re.I)))
+
+    # Passwords from .env and secret stores
+    passwords_to_check: set[str] = set()
+    for k, v in env_vars.items():
+        if any(w in k.lower() for w in ["pass", "secret", "token", "key"]):
+            if v and len(v) >= 6:
+                passwords_to_check.add(v)
+    
+    # Load secrets store passwords
+    for sec_path in [
+        Path.home() / ".config" / "job-agent" / ".candidate_secrets.json",
+        Path.home() / ".config" / "job-agent" / "client_secret.json",
+    ]:
+        if sec_path.exists():
+            try:
+                sec_data = json.loads(sec_path.read_text())
+                for acc in sec_data.get("accounts", []):
+                    p = acc.get("password")
+                    if p and len(p) >= 6:
+                        passwords_to_check.add(p)
+                for p_key in ["standard_ats_password", "default_password", "alternate_password"]:
+                    p = sec_data.get(p_key) or sec_data.get("credentials", {}).get(p_key)
+                    if p and len(p) >= 6:
+                        passwords_to_check.add(p)
+            except Exception:
+                pass
+
+    for pwd in passwords_to_check:
+        universal_sensitive_patterns.append(("Credential/Password Leak", re.compile(re.escape(pwd))))
 
     # Patterns forbidden strictly in working code modules
     code_module_sensitive_patterns: List[Tuple[str, re.Pattern]] = []

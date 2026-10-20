@@ -111,14 +111,34 @@ The following behavioral and operational rules apply across all execution engine
 - **Manual Text Entry Forbidden if Upload Exists:** NEVER paste raw resume text into manual textareas unless the portal has no file upload capability.
 - **Dynamic CV Check:** Dynamically resolve the latest master resume PDF by checking `cv/` and `user_inputs/cv/` or referencing `CANDIDATE_MASTER_RESUME` from `.env`.
 - **Autofill with Resume First:** If the portal offers "Autofill with Resume", always click it and upload the CV first to auto-populate fields.
+- **Attachment Table Sanitization & Comment Protection:** Never inject personal info or email into file comment/notes fields. When uploading the master CV, ensure `Resume / CV: Yes` and `Relevant Files: Yes` are set, older resumes are unselected or deleted, and any tailored Cover Letter is marked as `Relevant Files: Yes`.
 - **Pre-Submission Review:** Always pause at the final review screen and generate an audit markdown report before submission.
 
 ### 2.5 Architecture & Optimization Directives
+- **High-Velocity Sub-Minute Automation (30s - 60s Target):** Minimize execution latency by eliminating hardcoded `time.sleep()`, using atomic batch DOM injection via `page.evaluate()` (<15ms per page), proactive dialog confirmation, and event-driven locator polling (see `benchmarks/fast_ats_execution_architecture.md`).
 - **Python 3.15+ Native Lazy Imports:** The runtime operates on Python 3.15+ with `PYTHON_LAZY_IMPORTS=all` (PEP 690 / PEP 810) enabled. All imports (including heavy libraries like Playwright, NumPy, SQLite, and docx) are lazily deferred on-demand, minimizing CLI startup latency and conserving execution memory.
 - **Single Universal Automation Engine:** NEVER write one-off python application scripts per job. Always use parameterized `tools/ats_runner.py`.
 - **Zero Git Commits for Individual Job Applications:** Never commit or push to GitHub after applying to an individual role. Commits are reserved for framework upgrades.
 - **Autonomous Tracker Recording:** Automatically record applied jobs in `user_inputs/job_search_tracker.csv` and replicate to SQLite `jobs.db` via `tools/sync_tracker.py`.
 - **Continuous Learning & Adaptation:** Automatically capture novel ATS questions and candidate answers in `user_inputs/application_qa_knowledge_base.json` and reuse them.
+
+### 2.6 Strict Authentication & Zero-Lockout Protocol (ZERO-TOLERANCE)
+- **Zero Credential Guessing / Single-Attempt Maximum:** Automation is permitted AT MOST ONE (1) login attempt per portal domain. NEVER iterate through password arrays, username guesses, or variations.
+- **Immediate Halt on Auth Failure:** If attempt #1 fails or yields an error, automation must IMMEDIATELY HALT, sound a chime (`Glass.aiff`), send a macOS notification, and leave the browser interactive for the user.
+- **Strict Ban on Auto-Registration for Existing Portals:** NEVER click 'New User', 'Create Account', or 'Register' if an account already exists or if login fails.
+- **Domain-Specific Registry Lookup:** Always resolve credentials from `~/.config/job-agent/.candidate_secrets.json` (`accounts` registry) or exact `.env` portal keys before attempting login. If not found, prompt the user instead of trying generic passwords.
+- **Security Warning Interceptor:** If any security warning ('last chance to sign in', 'account locked', 'too many attempts') appears on page, immediately abort.
+
+### 2.7 Cover Letter Integrity & Two-Tier Validation Protocol (Future Applications)
+- **Zero Broken Metrics & Dangling Operators:** All future generated cover letters must undergo strict automated validation before saving, converting to DOCX, or attaching to ATS forms.
+- **Tier 1 (Local Deterministic Linter - Primary):** Execute `parsers/linter.py` (`audit_structural_integrity`) on the local CPU (<10ms, 0 tokens) to reject:
+  1. Dangling percentage signs (`by %`, `discrepancies by %`).
+  2. Dangling plus operators without quantities (`Managing +`, `+ Airflow`).
+  3. Unpopulated placeholders or empty labels (`Req ID: `, `[NOT_SET]`, `[PLACEHOLDER]`, `<URL>`).
+  4. Truncated profile handles/URLs (verified against `CANDIDATE_LINKEDIN_URL` from `.env`).
+  5. Em dashes (`—`) and banned corporate slop.
+- **Tier 2 (OpenRouter Free Tier Proofreader - Secondary):** If Tier 1 flags defects or warnings, automatically dispatch to OpenRouter zero-cost free tier (`cohere/north-mini-code:free` or `google/gemma-4-31b-it:free`) to restore accurate quantified facts (e.g. `40%`, `15+`) and grammar.
+- **Old Letters Untouched:** Existing past application letters remain immutable; this validation gate strictly governs all newly generated cover letters.
 
 ---
 

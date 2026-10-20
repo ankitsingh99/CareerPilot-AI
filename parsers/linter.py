@@ -115,6 +115,61 @@ def calculate_burstiness(text: str) -> Dict[str, Any]:
     }
 
 
+def audit_structural_integrity(text: str) -> List[str]:
+    """
+    Local deterministic check for broken metrics, dangling operators,
+    unpopulated placeholders, and truncated profile handles.
+    """
+    violations = []
+
+    # 1. Broken / missing metrics and percentages
+    broken_pct_patterns = [
+        (r"(?:\bby|\breduced|\bincreased|\bimproved|\bof|\bgain of)\s+%", "Dangling percent sign without metric value (e.g. 'by %')"),
+        (r"(?<!\d)(?<!\w)%\b", "Isolated percent sign without numerical value"),
+        (r"\bby\s+percent\b", "Generic 'by percent' without quantified metric"),
+    ]
+    for pat, desc in broken_pct_patterns:
+        if re.search(pat, text, re.IGNORECASE):
+            violations.append(f"Broken Metric: {desc}")
+
+    # 2. Dangling operator signs (e.g. 'Managing + Airflow pipelines')
+    dangling_operators = [
+        (r"(?:Managing|Built|Over|Led|Supervised|Across)\s+\+\s+", "Dangling plus operator without quantity (e.g. 'Managing +')"),
+        (r"(?<!\w)\+\s+[A-Za-z]+", "Dangling plus sign before word without preceding digits"),
+    ]
+    for pat, desc in dangling_operators:
+        if re.search(pat, text, re.IGNORECASE):
+            violations.append(f"Dangling Operator: {desc}")
+
+    # 3. Unpopulated placeholders & empty labels
+    placeholder_patterns = [
+        (r"Req ID:\s*(?:\)|$|\n)", "Empty Requisition ID label ('Req ID: ')"),
+        (r"\[NOT_SET", "Unpopulated [NOT_SET: ...] placeholder"),
+        (r"\[PLACEHOLDER", "Unpopulated [PLACEHOLDER] tag"),
+        (r"<URL>", "Unresolved <URL> tag"),
+        (r"\[Company\]", "Unresolved [Company] placeholder"),
+        (r"\[Role\]", "Unresolved [Role] placeholder"),
+    ]
+    for pat, desc in placeholder_patterns:
+        if re.search(pat, text, re.IGNORECASE):
+            violations.append(f"Unpopulated Placeholder: {desc}")
+
+    # 4. Truncated LinkedIn URLs
+    linkedin_url = os.getenv("CANDIDATE_LINKEDIN_URL", "")
+    if linkedin_url:
+        expected_handle = linkedin_url.rstrip("/").split("/")[-1]
+        # Match linkedin URL in text
+        match = re.search(r"https?://(?:www\.)?linkedin\.com/in/([a-zA-Z0-9_\-]+)", text)
+        if match:
+            found_handle = match.group(1)
+            if found_handle != expected_handle and found_handle in expected_handle:
+                violations.append(
+                    f"Truncated Profile URL: Found '{found_handle}', expected complete handle '{expected_handle}'"
+                )
+
+    return violations
+
+
 def audit_profile_integrity(text: str) -> List[str]:
     """Checks for forbidden technology claims or hallucinations."""
     violations = []
@@ -124,10 +179,50 @@ def audit_profile_integrity(text: str) -> List[str]:
     return violations
 
 
-def lint_and_format(text: str) -> Dict[str, Any]:
+def proofread_with_openrouter(text: str, role_title: str = "", company: str = "") -> Dict[str, Any]:
     """
-    Complete on-device post-processing and linting pass.
-    Returns sanitized text and detailed audit metrics.
+    Tier 2: LLM Proofreading pass via OpenRouter Zero-Cost Free Tier.
+    Audits grammar, restores missing quantified metrics, and validates flow.
+    """
+    try:
+        from intelligence.llm_clients.openrouter import ask
+    except ImportError:
+        return {"success": False, "proofread_text": text, "error": "OpenRouter client unavailable"}
+
+    prompt = f"""
+Proofread and audit the following cover letter for the role '{role_title}' at '{company}'.
+
+INSTRUCTIONS:
+1. Fix any broken metrics (e.g. 'by %' -> check if 40% or appropriate, 'Managing +' -> check if '15+' or appropriate).
+2. Fix any dangling punctuation or unpopulated fields.
+3. Preserve all specific technologies, project names, and facts.
+4. Strictly maintain zero hyphens ('-') and zero em dashes ('—').
+5. Output ONLY the polished cover letter text without preamble or reasoning.
+
+TEXT:
+{text}
+"""
+    try:
+        proofread = ask(
+            prompt=prompt,
+            system="You are an expert editorial proofreader and career communications specialist. Output only the final proofread text directly.",
+            model="cohere/north-mini-code:free",
+            temperature=0.3,
+            max_tokens=3000
+        )
+        # Verify result is non-empty
+        if proofread and len(proofread.strip()) > 100:
+            return {"success": True, "proofread_text": proofread.strip(), "model": "cohere/north-mini-code:free"}
+    except Exception as e:
+        print(f"[proofreader:warning] OpenRouter proofread failed: {e}")
+
+    return {"success": False, "proofread_text": text, "error": "LLM call failed or empty response"}
+
+
+def lint_and_format(text: str, proofread_llm: bool = False, role_title: str = "", company: str = "") -> Dict[str, Any]:
+    """
+    Complete on-device post-processing, structural validation, and linting pass.
+    Optionally falls back to OpenRouter free tier for deep proofreading.
     """
     clean_text = sanitize_em_dashes(text)
     
@@ -145,20 +240,37 @@ def lint_and_format(text: str) -> Dict[str, Any]:
 
     clean_text, cliches_found = sanitize_cliches(clean_text)
     burstiness = calculate_burstiness(clean_text)
-    violations = audit_profile_integrity(clean_text)
+    tech_violations = audit_profile_integrity(clean_text)
+    structural_violations = audit_structural_integrity(clean_text)
 
-    passed = len(violations) == 0 and ("—" not in clean_text) and watermarks_purged >= 0
+    all_violations = tech_violations + structural_violations
+
+    # If structural violations exist and LLM proofreading is requested, attempt proofread
+    proofread_info = None
+    if (structural_violations or proofread_llm) and proofread_llm:
+        print("[linter:proofread] Invoking OpenRouter Free Tier proofreader...")
+        proofread_info = proofread_with_openrouter(clean_text, role_title=role_title, company=company)
+        if proofread_info.get("success"):
+            clean_text = proofread_info["proofread_text"]
+            # Re-run structural audit on proofread text
+            structural_violations = audit_structural_integrity(clean_text)
+            all_violations = tech_violations + structural_violations
+
+    passed = len(all_violations) == 0 and ("—" not in clean_text) and watermarks_purged >= 0
 
     return {
         "clean_text": clean_text,
         "passed": passed,
         "cliches_replaced": cliches_found,
         "burstiness": burstiness,
-        "violations": violations,
+        "violations": all_violations,
+        "tech_violations": tech_violations,
+        "structural_violations": structural_violations,
         "has_em_dash": "—" in clean_text,
         "watermarks_purged": watermarks_purged,
         "zippy_entropy": zippy_entropy,
         "ngram_audit": ngram_audit,
+        "proofread_info": proofread_info,
     }
 
 

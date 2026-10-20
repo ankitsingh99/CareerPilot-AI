@@ -367,16 +367,65 @@ def select_react_option(page: Page, input_id: str, search_text: str, exact_text:
 
 
 # ── Auto-Login & Registration Engine ─────────────────────────────────────────
+# Track domains where authentication was already attempted in current process
+_AUTHENTICATION_ATTEMPTS: set[str] = set()
+
+def get_portal_credentials(url: str) -> tuple[str, str]:
+    """
+    Resolves exact username and password for a given portal URL.
+    Checks ~/.config/job-agent/.candidate_secrets.json accounts registry first,
+    then client_secret.json, then environment variables.
+    """
+    domain = re.sub(r"^https?://", "", url).split("/")[0].lower()
+    
+    # 1. Check ~/.config/job-agent/.candidate_secrets.json accounts list
+    secrets_paths = [
+        Path.home() / ".config" / "job-agent" / ".candidate_secrets.json",
+        GLOBAL_SECRETS_FILE,
+        SECRETS_FILE
+    ]
+    for sp in secrets_paths:
+        if sp.exists():
+            try:
+                data = json.loads(sp.read_text())
+                # Check accounts array
+                for acc in data.get("accounts", []):
+                    web = (acc.get("website") or "").lower()
+                    comp = (acc.get("company") or "").lower()
+                    if (web and (web in url.lower() or domain in web)) or (comp and comp in url.lower()):
+                        u = acc.get("username", "")
+                        p = acc.get("password", "")
+                        if u and p:
+                            print(f"[auth:lookup] Resolved exact domain credentials for '{domain}' from {sp.name}")
+                            return u, p
+                # Check account_exceptions
+                for comp, acc in data.get("account_exceptions", {}).items():
+                    web = (acc.get("website") or "").lower()
+                    if (web and domain in web) or (comp.lower() in url.lower()):
+                        u = acc.get("username", "")
+                        p = acc.get("password", "")
+                        if u and p:
+                            print(f"[auth:lookup] Resolved exception credentials for '{domain}' from {sp.name}")
+                            return u, p
+            except Exception:
+                pass
+
+    # 2. Check standard defaults
+    _, def_email, def_pwd, _ = get_candidate_credentials()
+    return def_email, def_pwd
+
+
 def auto_authenticate_or_register(page: Page, ats: str, url: str) -> bool:
     """
-    1. First tries to log in using credentials from client_secret.json.
-    2. If user/account does not exist or login fails, creates an account using
-       email and password from client_secret.json.
-    3. Handles verification/OTP by alerting the user with macOS notifications.
-    4. Automatically persists new credentials to client_secret.json.
+    STRICT ZERO-LOCKOUT PROTOCOL:
+    1. Resolves exact domain credentials from registry.
+    2. Enforces STRICT SINGLE-ATTEMPT LIMIT per domain.
+    3. Scans for security warning / lockout banners and immediately halts if found.
+    4. NEVER guesses passwords or runs iteration loops.
+    5. NEVER calls auto-registration if an existing account exists or if login fails.
     """
-    prof, email, password, alt_password = get_candidate_credentials()
     curr_url = page.url.lower()
+    domain = re.sub(r"^https?://", "", url).split("/")[0].lower()
 
     # Step 0: Check if already authenticated or on job application form
     LOGIN_URL_INDICATORS = ["login", "signin", "sign-in", "accessmanagement", "auth", "session", "logon"]
@@ -391,32 +440,40 @@ def auto_authenticate_or_register(page: Page, ats: str, url: str) -> bool:
         print("[auth] No login wall detected. Proceeding with application flow.")
         return True
 
-    print(f"[auth] Login/Authentication screen detected for ATS: {ats}")
+    print(f"[auth] Login/Authentication screen detected for ATS: {ats} on {domain}")
 
-    # Step 1: Attempt Auto-Login with default password
-    login_success = _attempt_login(page, email, password)
+    # Step 0b: Check if account lockout or warning banner is already present
+    page_text = page.inner_text("body").lower()
+    if any(warn in page_text for warn in ["locked", "security reasons", "too many unsuccessful", "last chance"]):
+        print("[auth:circuit-breaker] CRITICAL: Account lockout or security warning detected on page! Halting immediately.")
+        alert("Account Lockout Detected", f"Automation aborted on {ats.upper()} to protect account.")
+        return False
+
+    # Step 0c: Enforce single attempt per domain per session
+    if domain in _AUTHENTICATION_ATTEMPTS:
+        print(f"[auth:circuit-breaker] Authentication was already attempted for {domain}. Halting to prevent lockout.")
+        alert("Manual Authentication Required", f"Please complete login manually on {ats.upper()}.")
+        return False
+
+    _AUTHENTICATION_ATTEMPTS.add(domain)
+
+    # Step 1: Resolve exact credentials
+    username, password = get_portal_credentials(url)
+    if not username or not password:
+        print(f"[auth:guard] No exact credentials found for {domain}. Aborting login to prevent guessing.")
+        alert("Credentials Missing", f"Please sign in manually on {ats.upper()}.")
+        return False
+
+    # Step 2: Exactly ONE login attempt
+    print(f"[auth:single-attempt] Attempting exactly 1 login for {domain} as '{username}'...")
+    login_success = _attempt_login(page, username, password)
     if login_success:
-        print("[auth] Auto-login succeeded with primary password!")
+        print("[auth] Login succeeded on single attempt!")
         return True
 
-    # Step 1b: If primary password failed and alternate password is configured, try it
-    if alt_password:
-        print("[auth] Primary password failed. Attempting login with alternate password...")
-        login_success = _attempt_login(page, email, alt_password)
-        if login_success:
-            print("[auth] Auto-login succeeded with alternate password!")
-            return True
-
-    # Step 2: If login failed or user does not exist, attempt auto-registration
-    print("[auth] Auto-login failed or account does not exist. Attempting auto-registration...")
-    registered = _attempt_register(page, prof, email, password, ats, url)
-    if registered:
-        print("[auth] Auto-registration completed successfully!")
-        return True
-
-    # Step 3: If login/registration failed and manual login is required
-    print("[auth] Automated authentication blocked. Alerting user to sign in...")
-    alert("ATS Login Required", f"Please sign in manually on the open {ats.upper()} browser window.")
+    # Step 3: If login fails, IMMEDIATELY HALT. Do NOT retry or call auto-registration.
+    print("[auth:guard] Login attempt 1 did not succeed. Halting automation immediately to prevent lockout.")
+    alert("Login Required", f"Please complete sign in manually on the open {ats.upper()} browser window.")
     return False
 
 
@@ -485,6 +542,13 @@ def _attempt_login(page: Page, email: str, password: str) -> bool:
         return False
 
     try:
+        # Pre-check for existing security warnings on page
+        page_text = page.inner_text("body").lower()
+        if any(w in page_text for w in ["locked", "security reasons", "too many unsuccessful", "last chance"]):
+            print("[auth:login] CRITICAL: Security lockout or warning banner active before submit. Aborting.")
+            alert("Account Lockout Detected", "Active lockout banner detected on portal.")
+            return False
+
         user_el.fill(email)
         pwd_el.fill(password)
         time.sleep(1)
@@ -511,9 +575,14 @@ def _attempt_login(page: Page, email: str, password: str) -> bool:
         if all(x not in curr for x in ["login.jsf", "/login", "signin", "accessmanagement"]):
             return True
 
-        # Check if error message appeared (e.g. invalid credentials or user does not exist)
+        # Check if lockout or error message appeared
         page_text = page.inner_text("body").lower()
-        if any(err in page_text for err in ["invalid", "incorrect", "doesn't exist", "not found", "create an account", "user name and password do not match"]):
+        if any(w in page_text for w in ["locked", "security reasons", "too many unsuccessful"]):
+            print("[auth:login] CRITICAL: Account lockout triggered or detected! Halting immediately.")
+            alert("Account Locked", "Portal indicated account is locked. Automation permanently halted.")
+            return False
+
+        if any(err in page_text for err in ["invalid", "incorrect", "doesn't exist", "not found", "create an account", "user name and password do not match", "last chance"]):
             print("[auth:login] Login failed with error banner: account does not exist or credentials rejected.")
             return False
 
@@ -783,6 +852,11 @@ def _fill_common(page: Page):
             try:
                 el = page.query_selector(sel)
                 if el and el.is_visible():
+                    el_id = (el.get_attribute("id") or "").lower()
+                    el_name = (el.get_attribute("name") or "").lower()
+                    # Guardrail: never inject identity fields into comment or notes inputs
+                    if any(bad in el_id or bad in el_name for bad in ["comment", "note", "desc", "reason", "feedback"]):
+                        continue
                     el.fill(value)
                     filled.append(keyword)
                     break
@@ -1052,8 +1126,23 @@ def _fill_city(page: Page):
 
 
 def _upload_resume(page: Page) -> bool:
-    """Attempt resume upload on common file-input selectors."""
+    """Attempt resume upload on common file-input selectors with Taleo table sanitization."""
     resume = str(RESUME_PATH.resolve())
+    
+    # 1. Clear any attachment comment inputs to avoid leaking text/email
+    for comment_sel in [
+        "input[id*='AttachedFilesBlock-comment']",
+        "input[name*='AttachedFilesBlock-comment']",
+        "input[id*='comment' i]",
+    ]:
+        try:
+            c_el = page.query_selector(comment_sel)
+            if c_el and c_el.is_visible():
+                c_el.fill("")
+        except Exception:
+            pass
+
+    uploaded = False
     for sel in [
         "input[type='file']",
         "input[id*='resume']",
@@ -1065,12 +1154,77 @@ def _upload_resume(page: Page) -> bool:
             if el:
                 el.set_input_files(resume)
                 print(f"[upload] Resume uploaded via {sel}")
-                time.sleep(3)
-                return True
+                uploaded = True
+                time.sleep(2)
+                
+                # Check for Taleo Attach button
+                for attach_btn_sel in [
+                    "input[id*='attachFileCommand']",
+                    "button:has-text('Attach')",
+                    "input[value='Attach']",
+                ]:
+                    try:
+                        ab = page.query_selector(attach_btn_sel)
+                        if ab and ab.is_visible():
+                            ab.click()
+                            print(f"[upload] Clicked Attach button via {attach_btn_sel}")
+                            time.sleep(3)
+                            break
+                    except Exception:
+                        pass
+                        
+                # Handle possible overwrite confirmation modal
+                for yes_sel in [
+                    "button[id*='YesOverwriteFileCommand']",
+                    "input[id*='YesOverwriteFileCommand']",
+                    "button:has-text('Yes')",
+                    "input[value='Yes']",
+                ]:
+                    try:
+                        yb = page.query_selector(yes_sel)
+                        if yb and yb.is_visible():
+                            yb.click()
+                            print("[upload] Confirmed file overwrite modal")
+                            time.sleep(2)
+                            break
+                    except Exception:
+                        pass
+                break
         except Exception:
             pass
-    print("[upload] No file input found - manual upload may be needed.")
-    return False
+
+    # 2. Sanitize Taleo Attachments Table if present
+    _sanitize_taleo_attachments(page)
+    return uploaded
+
+
+def _sanitize_taleo_attachments(page: Page):
+    """Ensure master CV has Resume/CV=Yes, Relevant=Yes, and Cover Letters have Relevant=Yes."""
+    try:
+        rows = page.query_selector_all("tr")
+        for tr in rows:
+            text = (tr.inner_text() or "").lower()
+            # If row is the master CV
+            if "ankit_resume" in text or "resume" in text:
+                # Check Resume / CV checkbox
+                resume_chk = tr.query_selector("input[id*='resumeselectionid']")
+                if resume_chk and not resume_chk.is_checked():
+                    resume_chk.check()
+                    print("[attachments] Set Resume/CV = Yes for master CV")
+                # Check Relevant Files checkbox
+                rel_chk = tr.query_selector("input[id*='selectionid']:not([id*='resumeselectionid'])")
+                if rel_chk and not rel_chk.is_checked():
+                    rel_chk.check()
+                    print("[attachments] Set Relevant Files = Yes for master CV")
+                    
+            # If row is a Cover Letter
+            elif "cover" in text:
+                rel_chk = tr.query_selector("input[id*='selectionid']:not([id*='resumeselectionid'])")
+                if rel_chk and not rel_chk.is_checked():
+                    rel_chk.check()
+                    print("[attachments] Set Relevant Files = Yes for Cover Letter")
+    except Exception as e:
+        print(f"[attachments] Error sanitizing attachments table: {e}")
 
 
 def _handle_relevant_files(page: Page) -> bool:
@@ -1308,9 +1462,12 @@ def _apply_taleo(url: str, slug: str, fields: dict, keep_open: bool = True):
         # 4. Advance to next step in wizard
         next_btn = None
         for sel in [
+            "input[id*='saveContinueCmdBottom']",
+            "input[id*='saveContinueCmd']",
             "#dialogTemplate-dialogForm-niceCommandButton_saveAndContinue",
             "#dialogTemplate-dialogForm-niceCommandButton_continue",
             "input[value*='Save and Continue']",
+            "button:has-text('Save and Continue')",
             "input[value*='Continue']",
             "input[value*='Next']",
             "button:has-text('Continue')",

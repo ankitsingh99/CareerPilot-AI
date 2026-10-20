@@ -56,10 +56,21 @@
 3. **Strict Zero-Cost OpenRouter Directive:** Exclusively use free-tier models ending in `:free`. Never incur billable API costs.
 4. **No Em Dashes (`—`):** Never use em dashes. Use standard hyphens (`-`), commas, colons, or parentheses.
 5. **Python 3.15 Native Lazy Imports:** Maintain `PYTHON_LAZY_IMPORTS=all` in `.env` and `utils/lazy_bootstrap.py`.
+6. **Attachment Sanitization Guardrail:** Never inject candidate personal identity into comments/notes inputs. Master CV must have `Resume / CV: Yes` & `Relevant Files: Yes`; Cover Letters must have `Relevant Files: Yes`; older CVs deleted/unselected.
+7. **High-Velocity Sub-Minute Execution:** Follow `benchmarks/fast_ats_execution_architecture.md` (atomic batch DOM injection, proactive dialog confirmation, zero arbitrary `time.sleep()`).
 
 ---
 
-## 4. Instructions for Next Agent / Session
+## 4. Benchmark & Application Status (Active)
+- **Benchmarked Application:** UnitedHealth Group (UHG) - Director Data Analytics (Job ID: 2393655)
+- **ATS Platform:** Oracle Taleo (`uhg.taleo.net`)
+- **Status:** Fully filled and verified. Preserved on `Review and Submit` page without submission (per benchmark directive).
+- **Benchmark & RCA Report:** [`benchmarks/taleo_uhg_benchmark_rca.md`](file:///Users/ashish/git/ai-job-search/benchmarks/taleo_uhg_benchmark_rca.md)
+- **High-Velocity Automation Plan:** [`benchmarks/fast_ats_execution_architecture.md`](file:///Users/ashish/git/ai-job-search/benchmarks/fast_ats_execution_architecture.md)
+
+---
+
+## 5. Instructions for Next Agent / Session
 
 1. Run `git status` to verify working tree status.
 2. Run `python tools/generate_workspace_from_master.py --audit-pii` before any git commit.
