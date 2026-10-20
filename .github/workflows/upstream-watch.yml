@@ -59,7 +59,7 @@ jobs:
           {
             echo "_Last checked: $(date -u '+%Y-%m-%d %H:%M UTC') · [run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})_"
             echo
-            python tools/upstream_triage.py --remote upstream --branch master
+            python utils/upstream_triage.py --remote upstream --branch master
           } > report.md
           cat report.md
 

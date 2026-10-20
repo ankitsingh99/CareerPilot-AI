@@ -3,7 +3,7 @@ name = "careerpilot-ai"
 version = "1.2.0"
 description = "CareerPilot AI - Autonomous Career Agent & Application Automation Framework"
 readme = "README.md"
-requires-python = ">=3.15"
+requires-python = ">=3.12"
 authors = [
     { name = "Ankit Kumar Singh" }
 ]
