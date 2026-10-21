@@ -40,7 +40,11 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from playwright.sync_api import sync_playwright, Page
+try:
+    from playwright.sync_api import sync_playwright, Page
+except ImportError:
+    sync_playwright = None
+    Page = object
 
 # ── Candidate & Secret Loading ───────────────────────────────────────────────
 SECRETS_FILE = Path(__file__).parent.parent / "client_secret.json"
@@ -141,8 +145,10 @@ def get_latest_resume() -> Path:
     return root / "cv" / "resume.pdf"
 
 RESUME_PATH = get_latest_resume()
+COVER_LETTERS_DIR = Path(__file__).parent.parent / "cover_letters"
 SCRATCH_DIR  = Path(__file__).parent.parent / "scratch"
 SESSION_DIR  = Path(__file__).parent.parent / ".browser_session"
+COVER_LETTERS_DIR.mkdir(exist_ok=True)
 SCRATCH_DIR.mkdir(exist_ok=True)
 SESSION_DIR.mkdir(exist_ok=True)
 
@@ -444,11 +450,17 @@ def auto_authenticate_or_register(page: Page, ats: str, url: str) -> bool:
     is_login_page = any(x in curr_url for x in LOGIN_URL_INDICATORS)
     has_pwd_input = False
     try:
-        has_pwd_input = bool(page.query_selector("input[type='password']"))
+        has_pwd_input = bool(page.query_selector("input[type='password'], div[data-automation-id='signInContent']"))
     except Exception:
         pass
 
-    if not is_login_page and not has_pwd_input:
+    has_signin_modal = False
+    try:
+        has_signin_modal = bool(page.query_selector("div[data-automation-id='signInContent'], div[role='dialog'] input[type='password']"))
+    except Exception:
+        pass
+
+    if not is_login_page and not has_pwd_input and not has_signin_modal:
         print("[auth] No login wall detected. Proceeding with application flow.")
         return True
 
@@ -530,24 +542,42 @@ def _attempt_login(page: Page, email: str, password: str) -> bool:
     ]
 
     user_el = None
-    for sel in user_selectors:
+    pwd_el = None
+    submit_btn = None
+
+    # Check if a dedicated modal dialog is open first (e.g., Workday signInContent or popUpDialog)
+    modal = page.query_selector("div[data-automation-id='signInContent'], div[role='dialog']")
+    if modal and modal.is_visible():
         try:
-            el = page.query_selector(sel)
-            if el and el.is_visible():
-                user_el = el
-                break
+            m_user = modal.query_selector("input[data-automation-id='email'], input[data-automation-id='username'], input[type='email']")
+            m_pwd = modal.query_selector("input[data-automation-id='password'], input[type='password']")
+            m_btn = modal.query_selector("button[data-automation-id='signInSubmitButton'], button[type='submit'], button:has-text('Sign In')")
+            if m_user and m_pwd and m_user.is_visible() and m_pwd.is_visible():
+                user_el = m_user
+                pwd_el = m_pwd
+                submit_btn = m_btn
+                print("[auth:login] Scoped credentials into active modal dialog.")
         except Exception:
             pass
 
-    pwd_el = None
-    for sel in pwd_selectors:
-        try:
-            el = page.query_selector(sel)
-            if el and el.is_visible():
-                pwd_el = el
-                break
-        except Exception:
-            pass
+    if not user_el or not pwd_el:
+        for sel in user_selectors:
+            try:
+                el = page.query_selector(sel)
+                if el and el.is_visible():
+                    user_el = el
+                    break
+            except Exception:
+                pass
+
+        for sel in pwd_selectors:
+            try:
+                el = page.query_selector(sel)
+                if el and el.is_visible():
+                    pwd_el = el
+                    break
+            except Exception:
+                pass
 
     if not user_el or not pwd_el:
         print("[auth:login] Login form elements not found.")
@@ -567,15 +597,29 @@ def _attempt_login(page: Page, email: str, password: str) -> bool:
 
         # Click submit
         submitted = False
-        for sel in submit_selectors:
+        if submit_btn and submit_btn.is_visible():
             try:
-                btn = page.query_selector(sel)
-                if btn and btn.is_visible():
-                    btn.click()
-                    submitted = True
-                    break
+                submit_btn.click(force=True, timeout=5000)
+                submitted = True
             except Exception:
                 pass
+
+        if not submitted:
+            for sel in [
+                "div[data-automation-id='click_filter']",
+                "button[data-automation-id='signInSubmitButton']"
+            ] + submit_selectors:
+                try:
+                    btn = page.query_selector(sel)
+                    if btn and btn.is_visible():
+                        try:
+                            btn.click(force=True, timeout=5000)
+                            submitted = True
+                            break
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
 
         if not submitted:
             pwd_el.press("Enter")
@@ -585,7 +629,10 @@ def _attempt_login(page: Page, email: str, password: str) -> bool:
         # Check if URL changed or login succeeded
         curr = page.url.lower()
         if all(x not in curr for x in ["login.jsf", "/login", "signin", "accessmanagement"]):
-            return True
+            # Check if password input is gone (modal closed)
+            pwd_check = page.query_selector("input[type='password'], input[data-automation-id='password']")
+            if not pwd_check or not pwd_check.is_visible():
+                return True
 
         # Check if lockout or error message appeared
         page_text = page.inner_text("body").lower()
@@ -594,7 +641,7 @@ def _attempt_login(page: Page, email: str, password: str) -> bool:
             alert("Account Locked", "Portal indicated account is locked. Automation permanently halted.")
             return False
 
-        if any(err in page_text for err in ["invalid", "incorrect", "doesn't exist", "not found", "create an account", "user name and password do not match", "last chance"]):
+        if any(err in page_text for err in ["invalid", "incorrect", "doesn't exist", "not found", "wrong email address or password", "create an account", "user name and password do not match", "last chance"]):
             print("[auth:login] Login failed with error banner: account does not exist or credentials rejected.")
             return False
 
@@ -921,6 +968,7 @@ def fill_address_hierarchy(page: Page, cand: dict = None) -> dict:
 
         # 2. Detect Line 2
         line2_selectors = [
+            "input[data-automation-id*='addressLine2' i]", "input[data-automation-id*='addressSection_addressLine2' i]",
             "#address2", "#address_2", "input[id*='address2' i]", "input[id*='address_2' i]",
             "input[id*='address_line_2' i]", "input[name*='address2' i]", "input[name*='address_2' i]",
             "input[name*='address_line_2' i]", "input[placeholder*='address 2' i]", "input[placeholder*='address line 2' i]",
@@ -938,6 +986,7 @@ def fill_address_hierarchy(page: Page, cand: dict = None) -> dict:
 
         # 3. Detect Line 1
         line1_selectors = [
+            "input[data-automation-id*='addressLine1' i]", "input[data-automation-id*='addressSection_addressLine1' i]",
             "#address1", "#address_1", "input[id*='address1' i]", "input[id*='address_1' i]",
             "input[id*='address_line_1' i]", "input[name*='address1' i]", "input[name*='address_1' i]",
             "input[name*='address_line_1' i]", "input[placeholder*='address 1' i]", "input[placeholder*='address line 1' i]",
@@ -982,6 +1031,7 @@ def fill_address_hierarchy(page: Page, cand: dict = None) -> dict:
     # 4. City / Town
     city_val = cand.get("city", "Noida")
     for sel in [
+        "input[data-automation-id*='city' i]",
         "#town", "input[id*='town' i]", "input[name*='town' i]",
         "input[id*='city' i]", "input[name*='city' i]",
         "input[placeholder*='city' i]", "input[placeholder*='town' i]"
@@ -1003,6 +1053,7 @@ def fill_address_hierarchy(page: Page, cand: dict = None) -> dict:
     # 5. State / Province / Region
     state_val = cand.get("state", "Uttar Pradesh")
     for sel in [
+        "input[data-automation-id*='state' i]", "input[data-automation-id*='region' i]",
         "#region", "input[id*='region' i]", "input[name*='region' i]",
         "input[id*='state' i]", "input[name*='state' i]",
         "input[id*='province' i]", "input[name*='province' i]",
@@ -1019,6 +1070,7 @@ def fill_address_hierarchy(page: Page, cand: dict = None) -> dict:
             pass
 
     for sel in [
+        "select[data-automation-id*='state' i]", "select[data-automation-id*='region' i]",
         "select[id*='state' i]", "select[name*='state' i]",
         "select[id*='province' i]", "select[name*='province' i]",
         "select[id*='region' i]", "select[name*='region' i]"
@@ -1041,6 +1093,7 @@ def fill_address_hierarchy(page: Page, cand: dict = None) -> dict:
     # 6. Postal Code / Zip Code / Postcode
     pincode_val = cand.get("pincode", "201304")
     for sel in [
+        "input[data-automation-id*='postalCode' i]", "input[data-automation-id*='postal' i]",
         "#postcode", "input[id*='postcode' i]", "input[name*='postcode' i]",
         "input[id*='zip' i]", "input[name*='zip' i]",
         "input[id*='postal' i]", "input[name*='postal' i]",
@@ -1137,6 +1190,7 @@ def _fill_common(page: Page):
     filled = []
     for keyword, value in mapping.items():
         for sel in [
+            f"input[data-automation-id*='{keyword}' i]",
             f"input[id*='{keyword}']",
             f"input[name*='{keyword}']",
             f"input[placeholder*='{keyword}']",
@@ -1527,7 +1581,8 @@ def _upload_resume(page: Page, slug: str = "") -> bool:
     resume = str(RESUME_PATH.resolve())
     cover_letter = None
     if slug:
-        candidates = list(COVER_LETTERS_DIR.glob(f"*{slug}*.docx")) + list(COVER_LETTERS_DIR.glob(f"*{slug}*.md"))
+        slug_clean = slug.lower().replace("_", "")
+        candidates = [p for p in COVER_LETTERS_DIR.glob("*.*") if slug_clean in p.name.lower().replace("_", "") and p.suffix in (".docx", ".pdf", ".md")]
         if candidates:
             cover_letter = str(candidates[0].resolve())
     if not cover_letter:
@@ -2193,16 +2248,148 @@ def _apply_taleo(url: str, slug: str, fields: dict, keep_open: bool = True):
     close_browser(pw, ctx, keep_open=keep_open)
 
 
-def _apply_workday(url: str, slug: str, fields: dict, keep_open: bool = True):
+def _apply_workday(url: str, slug: str, fields: dict = None, keep_open: bool = True, auto_submit: bool = False):
     print("[apply:workday] Workday: persistent session -> auto-login/register -> resume autofill -> common fields...")
     pw, ctx, page = open_persistent_browser()
     navigate(page, url)
     time.sleep(3)
-    auto_authenticate_or_register(page, "workday", url)
-    _upload_resume(page)
-    time.sleep(4)
-    _fill_common(page)
-    _handle_relevant_files(page)
+
+    # 0. Accept cookies if banner is present
+    accept_btn = page.query_selector("button[data-automation-id='legalNoticeAcceptButton'], button:has-text('Accept Cookies')")
+    if accept_btn and accept_btn.is_visible():
+        try:
+            accept_btn.click()
+            time.sleep(1)
+            print("[apply:workday] Accepted cookies.")
+        except Exception:
+            pass
+
+    # 1. Check if user is already authenticated
+    user_menu = page.query_selector("button[data-automation-id='utilityMenuButton']")
+    if not (user_menu and user_menu.is_visible()):
+        # Check if Sign In button is visible in header
+        signin_btn = page.query_selector("button[data-automation-id='utilityButtonSignIn'], a[data-automation-id='utilityButtonSignIn'], button:has-text('Sign In')")
+        if signin_btn and signin_btn.is_visible():
+            print("[apply:workday] Detected Sign In button. Opening login dialog...")
+            try:
+                signin_btn.click()
+                time.sleep(2)
+            except Exception as e:
+                print(f"[apply:workday] Sign in click notice: {e}")
+
+        # Attempt authentication if login modal or fields appeared
+        if page.query_selector("div[data-automation-id='signInContent'], div[role='dialog'], input[type='password']"):
+            auth_ok = auto_authenticate_or_register(page, "workday", url)
+            if not auth_ok:
+                print("[apply:workday] Authentication requires user attention. Leaving browser open and interactive.")
+                alert("Sign In Needed", "Please enter your password or sign in manually to Workday.")
+                close_browser(pw, ctx, keep_open=True)
+                return
+
+    # 2. Click Apply button if on job description page
+    apply_btn = page.query_selector("a[data-automation-id='adventureButton'], a:has-text('Apply'), button:has-text('Apply'), a:has-text('Apply Now'), button:has-text('Apply Now')")
+    if apply_btn and apply_btn.is_visible():
+        try:
+            print("[apply:workday] Clicking Apply button...")
+            apply_btn.click()
+            time.sleep(3)
+        except Exception as e:
+            print(f"[apply:workday] Apply click notice: {e}")
+
+    # 3. Select Autofill with Resume if offered
+    autofill_btn = page.query_selector("a[data-automation-id='autofillWithResume'], button:has-text('Autofill with Resume'), a:has-text('Autofill with Resume')")
+    if autofill_btn and autofill_btn.is_visible():
+        try:
+            print("[apply:workday] Selecting 'Autofill with Resume'...")
+            autofill_btn.click()
+            time.sleep(3)
+        except Exception as e:
+            print(f"[apply:workday] Autofill button notice: {e}")
+    else:
+        # Fallback: check for Apply Manually
+        manual_btn = page.query_selector("a[data-automation-id='applyManually'], button:has-text('Apply Manually'), a:has-text('Apply Manually')")
+        if manual_btn and manual_btn.is_visible():
+            try:
+                print("[apply:workday] Selecting 'Apply Manually'...")
+                manual_btn.click()
+                time.sleep(3)
+            except Exception as e:
+                pass
+
+    # 3b. Handle Authentication / Gateway on application page
+    # Poll for up to 12 seconds for either the application form OR the login/create account gateway
+    for _ in range(12):
+        time.sleep(1)
+        # Check if already authenticated and on form
+        if page.query_selector("div[data-automation-id='file-upload-drop-zone'], button[data-automation-id='bottom-navigation-next-button']"):
+            print("[apply:workday] Already authenticated on application form.")
+            break
+
+        # Check if modal is already open
+        if page.query_selector("div[data-automation-id='signInContent'] input[data-automation-id='email'], div[role='dialog'] input[type='password']"):
+            break
+
+        # Check if Create Account page or Sign In prompt is present
+        signin_prompt = page.query_selector("button:has-text('Sign In'), a:has-text('Sign In'), button[data-automation-id='signInLink']")
+        create_account_active = bool(page.query_selector("div[data-automation-id='createAccountPage'], button[data-automation-id='createAccountButton'], input[data-automation-id='verifyPassword']"))
+
+        if signin_prompt and signin_prompt.is_visible():
+            print("[apply:workday] Found 'Sign In' option on gateway. Opening Sign In modal...")
+            try:
+                signin_prompt.click()
+                time.sleep(2)
+                break
+            except Exception as e:
+                print(f"[apply:workday] Notice clicking Sign In: {e}")
+
+        if create_account_active:
+            link = page.query_selector("a:has-text('Sign In'), button:has-text('Sign In')")
+            if link and link.is_visible():
+                print("[apply:workday] Clicking 'Sign In' on Create Account page...")
+                try:
+                    link.click()
+                    time.sleep(2)
+                    break
+                except Exception as e:
+                    print(f"[apply:workday] Notice clicking Sign In: {e}")
+
+    # If login modal is open or login fields are present, attempt authentication via strict zero-lockout protocol
+    if page.query_selector("div[data-automation-id='signInContent'], div[role='dialog'], input[type='password']"):
+        print("[apply:workday] Attempting authentication via Sign In modal...")
+        auth_ok = auto_authenticate_or_register(page, "workday", url)
+        if not auth_ok:
+            print("[apply:workday] Authentication requires user attention. Leaving browser open and interactive.")
+            alert("Sign In Needed", "Please enter your password or sign in manually to Workday.")
+            close_browser(pw, ctx, keep_open=True)
+            return
+        time.sleep(4)
+
+    # 4. Multi-step form completion loop
+    for step in range(1, 10):
+        time.sleep(2)
+        _fill_common(page)
+        _upload_resume(page, slug)
+        _handle_relevant_files(page)
+        page.screenshot(path=str(SCRATCH_DIR / f"{slug}_workday_step_{step}.png"))
+
+        body_text = (page.inner_text("body") or "").lower()
+        if any(kw in body_text for kw in ["review your information", "review and submit", "pre-submission review", "summary of your application"]):
+            print(f"[apply:workday] Reached final review page on step {step}!")
+            break
+
+        # Check for Workday Next / Save and Continue button
+        nxt = page.query_selector("button[data-automation-id='bottom-navigation-next-button'], button:has-text('Save and Continue'), button:has-text('Next'), input[value*='Save and Continue' i], input[value*='Next' i]")
+        if nxt and "submit" not in (nxt.inner_text() or "").lower():
+            try:
+                print(f"[apply:workday] Step {step} complete. Navigating to next step...")
+                nxt.click()
+                time.sleep(4)
+            except Exception as e:
+                print(f"[apply:workday] Next step click notice: {e}")
+                break
+        else:
+            break
+
     page.screenshot(path=str(SCRATCH_DIR / f"{slug}_workday_prefill.png"))
     _alert_before_submit(slug)
     close_browser(pw, ctx, keep_open=keep_open)
