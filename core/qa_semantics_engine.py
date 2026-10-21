@@ -50,8 +50,20 @@ def load_candidate_context() -> Dict[str, Any]:
     pincode = os.getenv("CANDIDATE_PINCODE", "201304")
     address = os.getenv("CANDIDATE_ADDRESS", f"Sector 137, {city}, {state}, {pincode}")
 
-    ctc_lpa = os.getenv("CANDIDATE_CURRENT_CTC_LPA", "18.0")
-    exp_ctc_lpa = os.getenv("CANDIDATE_EXPECTED_CTC_LPA", "28.0")
+    raw_ctc_lpa = os.getenv("CANDIDATE_CURRENT_CTC_LPA", "18").strip()
+    try:
+        f_ctc = float(raw_ctc_lpa)
+        ctc_lpa = str(int(f_ctc)) if f_ctc.is_integer() else raw_ctc_lpa
+    except ValueError:
+        ctc_lpa = raw_ctc_lpa
+
+    raw_exp_ctc_lpa = os.getenv("CANDIDATE_EXPECTED_CTC_LPA", "28").strip()
+    try:
+        f_exp = float(raw_exp_ctc_lpa)
+        exp_ctc_lpa = str(int(f_exp)) if f_exp.is_integer() else raw_exp_ctc_lpa
+    except ValueError:
+        exp_ctc_lpa = raw_exp_ctc_lpa
+
     ctc_inr = os.getenv("CANDIDATE_CURRENT_CTC_INR", "1800000")
     exp_ctc_inr = os.getenv("CANDIDATE_EXPECTED_CTC_INR", "2800000")
     total_yoe = os.getenv("CANDIDATE_TOTAL_YOE", "4.8")
