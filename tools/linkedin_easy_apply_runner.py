@@ -467,15 +467,34 @@ def answer_modal_questions(page: Page):
                 ans = ask_openrouter_free(lbl or sel_id, options=opt_texts, field_type="select")
 
             if ans and ans != "N/A":
+                ans_clean = ans.strip().lower()
+                matched_val, matched_txt = None, None
                 for opt in options:
                     opt_t = opt.inner_text().strip()
-                    if opt_t.lower() == ans.lower() or ans.lower() in opt_t.lower() or opt_t.lower() in ans.lower():
-                        val = opt.get_attribute("value")
-                        if val is not None:
-                            sel.select_option(value=val)
-                            sel.dispatch_event("change")
-                            print(f"  [Dropdown] Selected '{opt_t}' for '{lbl[:30]}'")
+                    opt_clean = opt_t.lower()
+                    if opt_clean == ans_clean:
+                        matched_val, matched_txt = opt.get_attribute("value"), opt_t
+                        break
+                if not matched_val:
+                    for opt in options:
+                        opt_t = opt.inner_text().strip()
+                        opt_clean = opt_t.lower()
+                        if ans_clean == "male" and "female" in opt_clean:
+                            continue
+                        if re.search(r"\b" + re.escape(ans_clean) + r"\b", opt_clean):
+                            matched_val, matched_txt = opt.get_attribute("value"), opt_t
                             break
+                if not matched_val and ans_clean not in ("male", "no"):
+                    for opt in options:
+                        opt_t = opt.inner_text().strip()
+                        opt_clean = opt_t.lower()
+                        if ans_clean in opt_clean or opt_clean in ans_clean:
+                            matched_val, matched_txt = opt.get_attribute("value"), opt_t
+                            break
+                if matched_val is not None:
+                    sel.select_option(value=matched_val)
+                    sel.dispatch_event("change")
+                    print(f"  [Dropdown] Selected '{matched_txt}' for '{lbl[:30]}'")
         except Exception:
             pass
 
@@ -503,25 +522,58 @@ def answer_modal_questions(page: Page):
                 if lbl_el:
                     radio_labels.append(lbl_el.inner_text().strip())
 
-            ans = QASemanticsEngine.match_question(leg_text or "Screening question", field_type="radio", options=radio_labels)
-            if not ans or ans == "N/A":
-                ans = ask_openrouter_free(leg_text or "Screening question", options=radio_labels, field_type="radio")
+            # Rule: Gender is strictly Male
+            if any(k in leg_text for k in ["gender", "sex", "what is your gender", "biological sex", "gender identity"]):
+                ans = "Male"
+            else:
+                ans = QASemanticsEngine.match_question(leg_text or "Screening question", field_type="radio", options=radio_labels)
+                if not ans or ans == "N/A":
+                    ans = ask_openrouter_free(leg_text or "Screening question", options=radio_labels, field_type="radio")
 
             if ans and ans != "N/A":
+                ans_clean = ans.strip().lower()
+                matched_r, matched_lbl, matched_txt = None, None, None
+
+                # 1. Exact match first
                 for r in radios:
                     r_id = r.get_attribute("id") or ""
                     lbl_el = fs.query_selector(f"label[for='{r_id}']")
                     lbl_txt = (lbl_el.inner_text() if lbl_el else "").strip().lower()
-                    if ans.lower() == lbl_txt or ans.lower() in lbl_txt or lbl_txt in ans.lower():
-                        try:
-                            if lbl_el and lbl_el.is_visible():
-                                lbl_el.click()
-                            else:
-                                r.check(force=True)
-                        except Exception:
-                            r.check(force=True)
-                        print(f"  [Radio] Selected '{lbl_txt}' for '{leg_text[:30]}'")
+                    if ans_clean == lbl_txt:
+                        matched_r, matched_lbl, matched_txt = r, lbl_el, lbl_txt
                         break
+
+                # 2. Word boundary regex (strictly avoid "female" matching "male")
+                if not matched_r:
+                    for r in radios:
+                        r_id = r.get_attribute("id") or ""
+                        lbl_el = fs.query_selector(f"label[for='{r_id}']")
+                        lbl_txt = (lbl_el.inner_text() if lbl_el else "").strip().lower()
+                        if ans_clean == "male" and "female" in lbl_txt:
+                            continue
+                        if re.search(r"\b" + re.escape(ans_clean) + r"\b", lbl_txt):
+                            matched_r, matched_lbl, matched_txt = r, lbl_el, lbl_txt
+                            break
+
+                # 3. Fallback loose match only if not male/female or boolean
+                if not matched_r and ans_clean not in ("male", "no"):
+                    for r in radios:
+                        r_id = r.get_attribute("id") or ""
+                        lbl_el = fs.query_selector(f"label[for='{r_id}']")
+                        lbl_txt = (lbl_el.inner_text() if lbl_el else "").strip().lower()
+                        if ans_clean in lbl_txt or lbl_txt in ans_clean:
+                            matched_r, matched_lbl, matched_txt = r, lbl_el, lbl_txt
+                            break
+
+                if matched_r:
+                    try:
+                        if matched_lbl and matched_lbl.is_visible():
+                            matched_lbl.click()
+                        else:
+                            matched_r.check(force=True)
+                    except Exception:
+                        matched_r.check(force=True)
+                    print(f"  [Radio] Selected '{matched_txt}' for '{leg_text[:30]}'")
         except Exception:
             pass
 
@@ -863,12 +915,15 @@ def is_logged_in(page: Page) -> bool:
         url_lower = page.url.lower()
         if any(term in url_lower for term in ["login", "uas", "signup", "authwall", "checkpoint", "challenge"]):
             return False
-        if page.query_selector(".global-nav__me, #global-nav, .feed-identity-module, .profile-rail-card, nav.global-nav"):
-            return True
         title = page.title().lower()
-        if any(term in title for term in ["sign in", "sign up", "login", "auth"]):
+        if any(term in title for term in ["sign in", "sign up", "log in", "auth", "login"]):
             return False
-        return "feed" in url_lower or "jobs" in url_lower
+        # Modern LinkedIn authenticated nav links and elements
+        if page.query_selector("a[href*='/messaging'], a[href*='/notifications'], a[href*='/mynetwork'], .global-nav__me, #global-nav, nav.global-nav"):
+            return True
+        if "feed" in url_lower and "feed" in title:
+            return True
+        return False
     except Exception:
         return False
 
@@ -1076,13 +1131,21 @@ def run(
     session_dir = Path(".browser_session").resolve()
     session_dir.mkdir(parents=True, exist_ok=True)
 
-    browser = pw.chromium.launch_persistent_context(
-        user_data_dir=str(session_dir),
-        headless=False,
-        no_viewport=True,
-        args=["--start-maximized", "--no-default-browser-check", "--disable-gpu", "--disable-extensions"]
-    )
-    page = browser.pages[0] if browser.pages else browser.new_page()
+    browser = None
+    try:
+        browser = pw.chromium.connect_over_cdp("http://localhost:9222", timeout=1500)
+        ctx = browser.contexts[0] if browser.contexts else browser.new_context(no_viewport=True)
+        page = ctx.new_page()
+        print("[LinkedIn Setup] Attached to existing browser session on CDP port 9222.")
+    except Exception:
+        browser = pw.chromium.launch_persistent_context(
+            user_data_dir=str(session_dir),
+            headless=False,
+            no_viewport=True,
+            args=["--start-maximized", "--no-default-browser-check", "--disable-gpu", "--disable-extensions", "--remote-debugging-port=9222"]
+        )
+        ctx = browser
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
 
     # Step 1: Ensure authenticated
     ensure_authenticated(page)

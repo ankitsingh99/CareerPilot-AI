@@ -102,6 +102,17 @@ class TestQASemanticsEngine(unittest.TestCase):
         self.assertEqual(QASemanticsEngine.sanitize_experience_or_duration("4.8 years", "python experience"), "4")
         self.assertEqual(QASemanticsEngine.sanitize_experience_or_duration("4 years", "total experience"), "4")
 
+    def test_gender_strictly_male(self):
+        # 1. Text field
+        self.assertEqual(QASemanticsEngine.match_question("What is your gender?", field_type="text"), "Male")
+        self.assertEqual(QASemanticsEngine.match_question("Gender identity", field_type="text"), "Male")
+        self.assertEqual(QASemanticsEngine.match_question("Biological sex", field_type="text"), "Male")
+
+        # 2. Options list where Female precedes Male
+        gender_opts = ["Female", "Male", "Non-Binary", "Prefer not to say"]
+        self.assertEqual(QASemanticsEngine.match_question("What best describes your gender?", field_type="select", options=gender_opts), "Male")
+        self.assertEqual(QASemanticsEngine.match_question("Gender", field_type="radio", options=gender_opts), "Male")
+
 
 if __name__ == "__main__":
     unittest.main()

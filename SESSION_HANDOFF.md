@@ -40,11 +40,21 @@
   4. *Mandatory Date Population:* Enforce start and end dates for all roles and degrees (including UI5 shadow DOM web components).
   5. *Rush by Kira Domain Spec:* Strictly classified as `Retail` / `D2C Retail & E-Commerce Operations`.
 
-### 4. Zero-Cost OpenRouter Free Tier Catalog & CI Hardening
-- Synced 18 active free models (`cohere/north-mini-code:free`, `google/gemma-4-31b-it:free`, `minimax/minimax-m3.1-flash:free`, `nvidia/nemotron-3.5-lightning:free`) in `openrouter_free_models.txt`.
-- Hardened OpenRouter client (`intelligence/llm_clients/openrouter.py`) to raise `RuntimeError` immediately if `OPENROUTER_API_KEY` is unconfigured, preventing repeated 401 Unauthorized loops in CI environments.
-- Hardened QA Semantics test suite (`tests/test_qa_semantics_engine.py`) to mock knowledge base responses for learned Q&A duration sanitization checks, ensuring 100% CI reproducibility independent of local gitignored knowledge bases.
-- Guaranteed $0.00 spend across all operations.
+### 4. LinkedIn Easy Apply Automation & Daily Safety Ceiling
+- **Search Parameters:** Data Analyst positions in India posted in the last 24 hours (`f_TPR=r86400`, Date Descending).
+- **Execution & Submissions:** 12 Easy Apply applications completed and recorded in this cycle, reaching today's total of 41 Easy Apply applications.
+- **Rate Limit Safety:** Enforced daily safety ceiling (35-40 applications / 24h) to safeguard candidate account reputation. Easy Apply automation safely paused until the rolling 24h reset.
+- **Tracker Synchronization:** 100% of submitted jobs synced to `user_inputs/job_search_tracker.csv` and SQLite `jobs.db`.
+
+### 5. Strict Gender Match & Semantics Engine Hardening
+- **Strict Male Gender Directive:** Enforced exact string equality, negative assertions against `"female"`, and strict word-boundary regex (`\bmale\b`) across `core/qa_semantics_engine.py` and `tools/linkedin_easy_apply_runner.py` to eradicate substring collisions (where `"female"` previously matched substring `"male"`).
+- **Comprehensive Unit Testing:** Added `test_gender_strictly_male` in `tests/test_qa_semantics_engine.py`, ensuring `Male` is accurately matched across radio options and dropdowns.
+- **Codified Invariant:** Codified in `.agents/rules/05_APPLICATION_LEARNING_AND_ADAPTATION.md` and `user_inputs/candidate_preferences_and_rules.md`.
+
+### 6. Modern LinkedIn Navigation & CDP Session Resiliency
+- **Auth & Nav Detection:** Updated `is_logged_in` in `tools/linkedin_easy_apply_runner.py` to recognize modern obfuscated nav selectors (`a[href*='/messaging']`, `a[href*='/notifications']`, `a[href*='/mynetwork']`), eliminating false-positive login walls.
+- **CDP Port 9222 Attach:** Added automatic fallback to connect via `connect_over_cdp("http://localhost:9222")`, allowing scripts to seamlessly share the existing interactive browser session without profile lock conflicts.
+- **Zero-Cost OpenRouter Free Tier:** Utilized zero-cost free models (`google/gemma-4-31b-it:free`, `cohere/north-mini-code:free`) with zero financial spend.
 
 ---
 

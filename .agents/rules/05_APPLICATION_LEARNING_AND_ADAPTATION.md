@@ -51,6 +51,9 @@ Whenever a new question, screening prompt, dropdown selection, behavioral scenar
 - **Talent Community / Job Alerts**: Always opt-in.
 - **Source / Referral**: `Career Website` / `Company Website`.
 
+### F. Gender & Demographics
+- **Gender Screening**: Strictly `Male`. Never allow loose substring matching to match 'Female' when selecting 'Male' across radio buttons, select elements, or combobox options.
+
 ---
 
 ## 4. Automatic Self-Adaptation Protocol

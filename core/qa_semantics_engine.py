@@ -405,6 +405,10 @@ class QASemanticsEngine:
                 for opt in options:
                     if opt.strip().lower() == "male":
                         return opt.strip()
+                for opt in options:
+                    if re.search(r"\bmale\b", opt.strip(), re.IGNORECASE) and "female" not in opt.lower():
+                        return opt.strip()
+                return "Male"
 
             # Location / Country options
             if any(k in lbl for k in ["country", "location", "citizenship", "nationality"]):
@@ -486,6 +490,8 @@ class QASemanticsEngine:
             return cand["pincode"]
         if any(k in lbl for k in ["street address", "address line 1", "residential address", "home address"]):
             return cand["address"]
+        if any(k in lbl for k in ["gender", "sex", "what is your gender", "biological sex", "gender identity"]):
+            return "Male"
 
         # ── 5.5 PROFESSIONAL REFERENCES (STRICT ZERO-FABRICATION RULE) ───────────
         # Consent/permission to contact references is Yes, but candidate has not provided
