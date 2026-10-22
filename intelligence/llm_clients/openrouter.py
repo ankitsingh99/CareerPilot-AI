@@ -46,6 +46,59 @@ _RESPONSE_CACHE_DB = Path.home() / ".cache" / "careerpilot" / "llm_responses_cac
 _CACHE_TTL_SECONDS = 3600  # 1 hour
 _IN_MEMORY_CACHE: dict = {"timestamp": 0.0, "models": []}
 
+# Global Token Benchmarking Ledger (Strict Zero-Cost & Token-Lean Tracking)
+_SESSION_USAGE = {
+    "requests": 0,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0,
+    "cost_usd": 0.0,
+    "cache_hits": 0,
+    "calls": [],
+}
+
+
+def get_session_token_usage() -> dict:
+    """Return a snapshot of token consumption metrics for the active session."""
+    return {
+        "requests": _SESSION_USAGE["requests"],
+        "prompt_tokens": _SESSION_USAGE["prompt_tokens"],
+        "completion_tokens": _SESSION_USAGE["completion_tokens"],
+        "total_tokens": _SESSION_USAGE["total_tokens"],
+        "cost_usd": _SESSION_USAGE["cost_usd"],
+        "cache_hits": _SESSION_USAGE["cache_hits"],
+        "calls": list(_SESSION_USAGE["calls"]),
+    }
+
+
+def reset_session_token_usage():
+    """Reset the session token usage counter before a benchmarked run."""
+    global _SESSION_USAGE
+    _SESSION_USAGE = {
+        "requests": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "cost_usd": 0.0,
+        "cache_hits": 0,
+        "calls": [],
+    }
+
+
+def print_token_benchmark():
+    """Display an executive benchmark summary of token consumption and zero-cost adherence."""
+    u = get_session_token_usage()
+    print("\n" + "=" * 65)
+    print("  CAREERPILOT AI - OPENROUTER TOKEN BENCHMARK SUMMARY")
+    print("=" * 65)
+    print(f"  Total API Requests:      {u['requests']}")
+    print(f"  Local Cache Hits (0 tok):{u['cache_hits']}")
+    print(f"  Prompt Tokens:           {u['prompt_tokens']}")
+    print(f"  Completion Tokens:       {u['completion_tokens']}")
+    print(f"  Total Tokens Consumed:   {u['total_tokens']}")
+    print(f"  Financial Cost:          ${u['cost_usd']:.4f} (Strict Zero-Cost AGENTS.md Compliant)")
+    print("=" * 65 + "\n")
+
 
 def _init_response_cache():
     _RESPONSE_CACHE_DB.parent.mkdir(parents=True, exist_ok=True)
@@ -264,6 +317,14 @@ def ask(
     cached_content = get_cached_response(cache_key)
     if cached_content:
         print(f"[openrouter:cache] ⚡ Local disk cache hit (0 requests, 0 tokens consumed)")
+        _SESSION_USAGE["cache_hits"] += 1
+        _SESSION_USAGE["calls"].append({
+            "model": f"{model} (disk_cache)",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "cost": 0.0,
+        })
         return cached_content
 
     messages = [
@@ -282,10 +343,19 @@ def ask(
 
     # Build candidate models list dynamically from live free models pool
     available_pool = fetch_free_models()
+    PRIORITY_MODELS = [
+        "google/gemma-4-31b-it:free",
+        "google/gemma-4-26b-a4b-it:free",
+        "cohere/north-mini-code:free",
+        "minimax/minimax-m3.1-flash:free",
+        "nvidia/nemotron-3.5-lightning:free",
+        "nvidia/nemotron-3.5-super-vl:free",
+    ]
+    sorted_pool = [m for m in PRIORITY_MODELS if m in available_pool] + [m for m in available_pool if m not in PRIORITY_MODELS]
     if model in ("auto", "any"):
-        candidate_models = list(available_pool)
+        candidate_models = list(sorted_pool)
     else:
-        candidate_models = [model] + [m for m in available_pool if m != model]
+        candidate_models = [model] + [m for m in sorted_pool if m != model]
     last_error = None
 
     for current_model in candidate_models:
@@ -314,6 +384,22 @@ def ask(
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
+                usage = data.get("usage", {})
+                p_tok = usage.get("prompt_tokens", 0)
+                c_tok = usage.get("completion_tokens", 0)
+                tot_tok = usage.get("total_tokens", p_tok + c_tok)
+                _SESSION_USAGE["requests"] += 1
+                _SESSION_USAGE["prompt_tokens"] += p_tok
+                _SESSION_USAGE["completion_tokens"] += c_tok
+                _SESSION_USAGE["total_tokens"] += tot_tok
+                _SESSION_USAGE["calls"].append({
+                    "model": current_model,
+                    "prompt_tokens": p_tok,
+                    "completion_tokens": c_tok,
+                    "total_tokens": tot_tok,
+                    "cost": 0.0,
+                })
+
                 choice_msg = data.get("choices", [{}])[0].get("message", {})
                 content = (choice_msg.get("content") or "").strip()
                 if not content and choice_msg.get("reasoning"):

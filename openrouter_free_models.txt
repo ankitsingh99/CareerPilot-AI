@@ -1,6 +1,6 @@
 # OpenRouter Zero-Cost Free Models Catalog
-# Generated: 2026-10-20 10:31:07 UTC
-# Total Active Free Models: 17
+# Generated: 2026-10-22 06:05:05 UTC
+# Total Active Free Models: 18
 # Update Frequency: Weekly (Scheduled via GitHub Actions & Antigravity Cron)
 # Zero-Cost Policy: $0.00 / prompt token, $0.00 / completion token (100% Free)
 
@@ -21,6 +21,7 @@ nvidia/nemotron-3.5-lightning:free             | 1,000,000 | NVIDIA: Nemotron 3.
 nvidia/nemotron-3.5-super-vl:free              | 1,000,000 | NVIDIA: Nemotron 3.5 Super VL (free)
 poolside/laguna-s-2.1:free                     |   262,144 | Poolside: Laguna S 2.1 (free)
 poolside/laguna-xs-2.1:free                    |   262,144 | Poolside: Laguna XS 2.1 (free)
+recursive/flint-v1.0:free                      |   262,144 | Recursive: Flint (free)
 thinkingmachines/inkling-small:free            | 1,048,576 | Thinking Machines: Inkling Small (free)
 thinkingmachines/inkling:free                  | 1,048,576 | Thinking Machines: Inkling (free)
 xingchen-agi/xing4.0-29b-a4b:free              |   262,144 | XingChen: Xing4.0 29B A4B (free)
@@ -43,6 +44,7 @@ nvidia/nemotron-3.5-lightning:free
 nvidia/nemotron-3.5-super-vl:free
 poolside/laguna-s-2.1:free
 poolside/laguna-xs-2.1:free
+recursive/flint-v1.0:free
 thinkingmachines/inkling-small:free
 thinkingmachines/inkling:free
 xingchen-agi/xing4.0-29b-a4b:free

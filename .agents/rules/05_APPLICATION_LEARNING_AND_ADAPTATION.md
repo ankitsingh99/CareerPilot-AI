@@ -78,3 +78,32 @@ Before filling any form field or submitting any application:
   - Patterns: "use of personal data", "personal data from your application", "improve our recruitment experience", "data consent", "privacy consent"
   - Rule: Always agree/opt-in to recruitment data consent questions.
 
+---
+
+## 6. Enterprise ATS & Dynamic Table Multi-Record Directives (Permanent Lessons)
+
+### I. Zero Reference Person Fabrication (STRICT ZERO-TOLERANCE)
+- **Zero Hallucination Policy**: Candidate has NOT provided external personal or managerial references. NEVER pull reference names, phones, emails, titles, or organizations out of thin air.
+- **Reference Details Fields**: Always leave reference person fields (`custname`, `custphone`, `custemail`, `custoccupat`, `custcompany`, `custyears`) completely blank.
+- **Reference Permission / Consent**: If asked *"At the time of offer, may we contact your references?"* or *"Permission to contact references"*, ALWAYS select `Yes`.
+
+### J. College-Only Education History Default
+- **Higher Education Only**: Only populate college / university education (`University of Delhi`, Bachelor of Arts (Hons.) Business Economics, `07/01/2017` - `07/01/2020`).
+- **School Exclusion**: NEVER add Class 10th (Secondary School) or Class 12th (Senior Secondary) unless the form explicitly demands all levels of schooling or has explicit mandatory high school sections.
+- **Row Pruning**: If an ATS portal automatically creates multiple empty education rows or previous school rows exist, prune them down to the single College degree row.
+
+### K. Omit CGPA / Percentage / Scores Unless Strictly Mandatory
+- **Score Omission Policy**: Do NOT write CGPA (e.g. `6.5`), percentage, or academic scores into `finalGrade`, `GPA`, or `score` fields unless the field is explicitly marked mandatory with an asterisk (`*`) or validation prevents proceeding without it.
+- **Zero Unprompted Metric Injection**: Leave grade fields blank by default.
+
+### L. Mandatory Start and End Dates Population across UI5 / Shadow DOM
+- **Complete Timeline Mandate**: Start dates and end dates must NEVER be missing in Education or Work Experience entries.
+- **UI5 Shadow DOM Web Components**: On portals utilizing `<ui5-date-picker-xweb-calendar-widget>`, standard input fill events fail. Automation must access the shadow root, update the `.value` property in `MM/DD/YYYY` format, and dispatch synthetic `input` and `change` events.
+- **Current Role Handling**: For ongoing roles (e.g. Rush by Kira), leave the end date empty and check `Currently Working Here` / `Current Employer: Yes`.
+
+### M. Rush by Kira Domain & Organization Classification
+- **Domain Specialization**: Rush by Kira is strictly an active **D2C retail business**.
+- **Industry / Business Type**: `Retail`.
+- **Organization / Department**: `D2C Retail & E-Commerce Operations`.
+- **Location**: `Delhi / Remote, India`.
+

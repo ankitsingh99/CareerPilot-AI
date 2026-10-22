@@ -45,6 +45,7 @@ All fields below are loaded from `.env` or structured user inputs. When generati
 - **Total Experience:** `4.8` years
 - **Current CTC / Compensation / Annual Income:** `18` LPA (`1800000`)
 - **Annual Income Directive:** Whenever any field asks for annual income, current salary, compensation, current CTC, or package, ALWAYS use `1800000` (or `18` if LPA/decimal). NEVER fill `4` or years of experience into income/salary fields.
+- **Experience & Duration Directive:** Whenever any field or question asks for experience, tenure, or duration (e.g. years of experience with a skill/tool, total experience, notice period in days or months), NEVER write words like 'year', 'month', or 'day', and never write decimals. ALWAYS write strictly an integer value (e.g. `4`, `0`).
 - **Expected CTC / Salary Expectation:** `28` LPA (`2800000`)
 - **Upper Salary Range Directive:** Whenever any pay or salary range is written on a job posting or description, ALWAYS use the upper value as desired salary. If no range is written, fallback to 28 LPA (2800000 INR).
 - **Master Resume Path:** `cv/Ankit_Resume_v4.pdf`
@@ -66,7 +67,7 @@ All fields below are loaded from `.env` or structured user inputs. When generati
 `[NOT_SET: CANDIDATE_EXPERIENCE_ENTRIES]`
 
 ### 1.5 Technical Skills Template
-- **Primary Languages & Query Engines:** `Python, PySpark, SQL (Snowflake, PostgreSQL, Trino, Oracle), Apache Airflow, ETL/ELT Architectures, AI Agents & Webhooks, SQL Performance Tuning`
+- **Primary Languages & Query Engines:** `Python, PySpark, SQL (Snowflake, PostgreSQL (4 yr exp), Trino, Oracle), Apache Airflow, ETL/ELT Architectures (4 yr exp), AI Agents & Webhooks, SQL Performance Tuning, Data Modeling/Warehouse (4 yr exp)`
 - **ETL / Frameworks & Tools:** `Tableau, AWS (S3, SNS), Git, Bitbucket, SonarQube, Apache Airflow, Unix/Linux, Microsoft Excel, PowerPoint, Meta Ads & Pixel, Jupyter Notebooks`
 - **Secondary / Data Science & ML:** `Machine Learning (Scikit-learn, Feature Engineering, Anomaly Modeling, Cohort Analytics, Time-Series Forecasting), AWS (SNS, S3), Autosys, REST APIs, Unix, SonarQube, Bitbucket`
 - **Domain Specializations:** `Data Governance & Engineering, Healthcare Commercial Analytics (HIPAA, PII, HCP/HCO, Claims, Field Force & Sales Analytics), AI Agent Automation, E-commerce/D2C Analytics, Financial Valuation`
@@ -94,9 +95,15 @@ The following behavioral and operational rules apply across all execution engine
 
 ### 2.2 Model & Cost Directives
 - **STRICT ZERO-COST OPENROUTER DIRECTIVE (NO PAID CALLS EVER):**
-  - Zero financial budget. ONLY open-source models ending strictly with `:free` (e.g. `google/gemma-2-9b-it:free`, `nvidia/nemotron-70b:free`, `qwen/qwen-2.5-7b:free`) are permitted.
+  - Zero financial budget. ONLY open-source models ending strictly with `:free` (e.g. `google/gemma-4-31b-it:free`, `cohere/north-mini-code:free`, `minimax/minimax-m3.1-flash:free`) are permitted.
   - NEVER invoke, configure, or fall back to any paid tier or billable endpoint.
   - If free endpoints are busy, alert the user rather than incurring cost.
+- **OPENROUTER ON-DEMAND INVOCATION DIRECTIVE:**
+  - Do NOT use OpenRouter until explicitly asked for by the user.
+  - Contextual Continuation Exception: Use OpenRouter ONLY if:
+    1. The user explicitly requests to use OpenRouter (e.g. "use openrouter").
+    2. The user previously asked to perform a task using OpenRouter and then answers a follow-up question or provides input for that task without explicitly repeating "use openrouter".
+  - In all other workflows, rely on local deterministic compute and offline parsers.
 
 ### 2.3 Browser Automation Hierarchy
 1. **Primary Automation:** Local headed Playwright runner (`tools/ats_runner.py`).

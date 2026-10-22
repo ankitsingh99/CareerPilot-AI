@@ -17,6 +17,7 @@ import csv
 import urllib.parse
 import subprocess
 import argparse
+import shutil
 from pathlib import Path
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional, List, Dict
@@ -55,6 +56,36 @@ CSV_FIELDS = [
 ]
 
 DAILY_EASY_APPLY_LIMIT = 40
+
+LINKEDIN_GEO_MAP = {
+    "delhi ncr": ("Delhi, India", "103444604"),
+    "delhi": ("Delhi, India", "103444604"),
+    "ncr": ("Delhi, India", "103444604"),
+    "new delhi": ("New Delhi, Delhi, India", "106198888"),
+    "noida": ("Noida, Uttar Pradesh, India", "104101886"),
+    "gurugram": ("Gurugram, Haryana, India", "105556991"),
+    "gurgaon": ("Gurugram, Haryana, India", "105556991"),
+    "bengaluru": ("Bengaluru, Karnataka, India", "105214831"),
+    "bangalore": ("Bengaluru, Karnataka, India", "105214831"),
+    "hyderabad": ("Hyderabad, Telangana, India", "105556992"),
+    "mumbai": ("Mumbai, Maharashtra, India", "106153096"),
+    "pune": ("Pune, Maharashtra, India", "103644278"),
+    "chennai": ("Chennai, Tamil Nadu, India", "104101887"),
+    "india": ("India", "102713980"),
+}
+
+def resolve_linkedin_geo(loc_input: str) -> tuple[str, str]:
+    """Resolve human location string to canonical LinkedIn location string and official geoId."""
+    clean = loc_input.strip().lower()
+    if clean in LINKEDIN_GEO_MAP:
+        return LINKEDIN_GEO_MAP[clean]
+    for k, v in LINKEDIN_GEO_MAP.items():
+        if k in clean:
+            return v
+    foreign_terms = ["us", "usa", "united states", "uk", "germany", "singapore", "canada", "uae", "dubai", "michigan"]
+    if "india" not in clean and not any(term in clean for term in foreign_terms):
+        return (f"{loc_input.strip()}, India", "102713980")
+    return (loc_input.strip(), "")
 
 def get_today_easy_apply_count() -> int:
     """Return number of LinkedIn Easy Apply jobs submitted on the current calendar date."""
@@ -256,6 +287,8 @@ def ask_openrouter_free(question: str, options: Optional[List[str]] = None, fiel
         "You are an ATS job application form filler representing the candidate.\n"
         "Your duty is to output ONLY the exact, factual string to enter or select into the form.\n"
         "Do NOT provide explanations, pleasantries, markdown, or commentary.\n"
+        "CRITICAL RULE: Whenever experience, tenure, or duration is asked (e.g. years of experience, days notice, joining time, duration with a tool), "
+        "NEVER write 'year', 'month', 'day', or decimals. Just write the integer value (e.g. 4 or 0).\n"
         f"{context}"
     )
 
@@ -265,14 +298,32 @@ def ask_openrouter_free(question: str, options: Optional[List[str]] = None, fiel
         user_prompt += "Select and return ONLY the single exact option text from the list that best matches the candidate."
     else:
         if field_type == "number":
-            user_prompt += "Return ONLY a single numeric value (e.g., 4 or 5)."
+            user_prompt += "Return ONLY a single numeric value (e.g., 4 or 0)."
         else:
             user_prompt += "Return ONLY the concise exact value to type into the field."
 
     try:
         # Strictly use zero-cost free models
         response = ask(user_prompt, system=system_prompt, model="auto", max_tokens=100)
-        ans = response.strip().strip('"').strip("'").strip()
+        raw = response.strip()
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+        ans = lines[-1].strip('"').strip("'").strip() if lines else raw.strip('"').strip("'").strip()
+        if ans and field_type not in ("select", "radio"):
+            # Enforce integer-only for duration / experience questions
+            unit_match = re.match(r"^\s*(\d+(?:\.\d+)?)\s*(?:years?|yrs?|months?|mos?|days?)\s*$", ans, re.IGNORECASE)
+            if unit_match:
+                try:
+                    ans = str(int(float(unit_match.group(1))))
+                except ValueError:
+                    pass
+            elif any(k in question.lower() for k in ["experience", "yoe", "how many years", "how many days", "days notice"]):
+                m_dig = re.search(r"\b(\d+(?:\.\d+)?)\b", ans)
+                if m_dig:
+                    try:
+                        ans = str(int(float(m_dig.group(1))))
+                    except ValueError:
+                        pass
         if ans:
             _QA_CACHE[cache_key] = ans
             save_to_qa_knowledge_base(question, ans)
@@ -390,7 +441,7 @@ def answer_modal_questions(page: Page):
             if not sel.is_visible():
                 continue
             cur = sel.input_value()
-            if cur and cur.lower() not in ("", "select an option", "please select"):
+            if cur and cur.lower() not in ("", "select an option", "please select", "select", "none"):
                 continue
             
             options = sel.query_selector_all("option")
@@ -401,13 +452,30 @@ def answer_modal_questions(page: Page):
             sel_id = sel.get_attribute("id") or ""
             lbl_el = page.query_selector(f"label[for='{sel_id}']") if sel_id else None
             lbl = (lbl_el.inner_text() if lbl_el else "").strip().lower()
+            if not lbl:
+                lbl = (sel.get_attribute("aria-label") or "").strip().lower()
+            if not lbl:
+                try:
+                    parent_lbl = sel.evaluate("el => el.closest('.fb-dash-form-element, .jobs-easy-apply-modal__section, label')?.querySelector('label, .fb-dash-form-element__label, legend')?.innerText || ''")
+                    if parent_lbl:
+                        lbl = parent_lbl.strip().lower()
+                except Exception:
+                    pass
 
             ans = QASemanticsEngine.match_question(lbl or sel_id, field_type="select", options=opt_texts)
-            if ans:
+            if not ans or ans == "N/A":
+                ans = ask_openrouter_free(lbl or sel_id, options=opt_texts, field_type="select")
+
+            if ans and ans != "N/A":
                 for opt in options:
-                    if opt.inner_text().strip().lower() == ans.lower() or ans.lower() in opt.inner_text().strip().lower():
-                        sel.select_option(value=opt.get_attribute("value") or "")
-                        break
+                    opt_t = opt.inner_text().strip()
+                    if opt_t.lower() == ans.lower() or ans.lower() in opt_t.lower() or opt_t.lower() in ans.lower():
+                        val = opt.get_attribute("value")
+                        if val is not None:
+                            sel.select_option(value=val)
+                            sel.dispatch_event("change")
+                            print(f"  [Dropdown] Selected '{opt_t}' for '{lbl[:30]}'")
+                            break
         except Exception:
             pass
 
@@ -416,9 +484,16 @@ def answer_modal_questions(page: Page):
         try:
             legend = fs.query_selector("legend")
             leg_text = (legend.inner_text() if legend else "").strip().lower()
-            radios = fs.query_selector_all("input[type='radio']")
+            if not leg_text:
+                leg_text = (fs.get_attribute("aria-label") or "").strip().lower()
+            if not leg_text:
+                try:
+                    leg_text = fs.evaluate("el => el.querySelector('.fb-dash-form-element__label, label, span')?.innerText || ''").strip().lower()
+                except Exception:
+                    pass
 
-            if any(r.is_checked() for r in radios):
+            radios = fs.query_selector_all("input[type='radio']")
+            if not radios or any(r.is_checked() for r in radios):
                 continue
 
             radio_labels = []
@@ -428,14 +503,24 @@ def answer_modal_questions(page: Page):
                 if lbl_el:
                     radio_labels.append(lbl_el.inner_text().strip())
 
-            ans = QASemanticsEngine.match_question(leg_text, field_type="radio", options=radio_labels)
-            if ans:
+            ans = QASemanticsEngine.match_question(leg_text or "Screening question", field_type="radio", options=radio_labels)
+            if not ans or ans == "N/A":
+                ans = ask_openrouter_free(leg_text or "Screening question", options=radio_labels, field_type="radio")
+
+            if ans and ans != "N/A":
                 for r in radios:
                     r_id = r.get_attribute("id") or ""
                     lbl_el = fs.query_selector(f"label[for='{r_id}']")
                     lbl_txt = (lbl_el.inner_text() if lbl_el else "").strip().lower()
-                    if ans.lower() in lbl_txt or lbl_txt in ans.lower():
-                        r.check()
+                    if ans.lower() == lbl_txt or ans.lower() in lbl_txt or lbl_txt in ans.lower():
+                        try:
+                            if lbl_el and lbl_el.is_visible():
+                                lbl_el.click()
+                            else:
+                                r.check(force=True)
+                        except Exception:
+                            r.check(force=True)
+                        print(f"  [Radio] Selected '{lbl_txt}' for '{leg_text[:30]}'")
                         break
         except Exception:
             pass
@@ -533,6 +618,17 @@ def clear_all_overlays(page: Page):
 
 def apply_to_current_job(page: Page) -> bool:
     """Complete the Easy Apply modal for whatever job is currently open."""
+    # ── Job Liveness Pre-Flight Check (Zero-Token Expired Posting Guard) ────
+    try:
+        from core.job_liveness_detector import is_job_expired
+        card_text = page.evaluate("() => { const card = document.querySelector('.jobs-search__job-details, .jobs-details'); return card ? card.innerText : ''; }")
+        expired, reason = is_job_expired(card_text)
+        if expired:
+            print(f"  [-] Skipped closed/expired posting: '{reason}'")
+            return False
+    except Exception:
+        pass
+
     btn = page.query_selector(".jobs-apply-button")
     if not btn or not btn.is_visible():
         return False
@@ -579,6 +675,30 @@ def apply_to_current_job(page: Page) -> bool:
                     time.sleep(2)
                 except Exception as e:
                     print(f"  [!] Upload note: {e}")
+
+        # ---- Upload Cover Letter if field exists ----
+        cover_letter_path = Path(ROOT_DIR) / "user_inputs" / "cover_letter.txt"
+        if not cover_letter_path.exists():
+            # generate a simple placeholder cover letter
+            cover_letter_path.write_text(
+                f"Dear Hiring Team,\n\nI am excited to apply for this role. My background in {os.getenv('CANDIDATE_PRIMARY_SKILLS', 'Data Engineering and Analytics')} aligns well with the position.\n\nThank you for your consideration.\n\nBest regards,\n{os.getenv('CANDIDATE_NAME', 'Ankit Kumar Singh')}"
+            )
+        # Find file input elements again and look for one labeled cover letter
+        cover_input = None
+        for inp in page.query_selector_all(".jobs-easy-apply-modal input[type='file']"):
+            lbl = inp.evaluate("el => el.closest('label')?.innerText || ''")
+            if lbl and 'cover letter' in lbl.lower():
+                cover_input = inp
+                break
+        if cover_input:
+            already_cov = page.query_selector(".jobs-easy-apply-modal .jobs-document-upload__file-name")
+            if not already_cov:
+                try:
+                    cover_input.set_input_files(str(cover_letter_path))
+                    print(f"  [+] Uploaded Cover Letter: {cover_letter_path.name}")
+                    time.sleep(2)
+                except Exception as e:
+                    print(f"  [!] Cover letter upload error: {e}")
 
         # ── Fill form fields with rules + OpenRouter Free ─────────────────
         answer_modal_questions(page)
@@ -669,7 +789,7 @@ def apply_to_current_job(page: Page) -> bool:
             time.sleep(2)
             continue
 
-        if action == "review" and not review_clicked:
+        if action == "review":
             print("  [→] Review…")
             page.evaluate("""() => {
                 const modal = document.querySelector('.jobs-easy-apply-modal');
@@ -679,9 +799,41 @@ def apply_to_current_job(page: Page) -> bool:
                     return t.includes('review your application') || t.includes('review');
                 });
                 if (btn) btn.click();
+                const content = (modal || document).querySelector('.jobs-easy-apply-modal__content, .artdeco-modal__content');
+                if (content) content.scrollTop = content.scrollHeight;
             }""")
             review_clicked = True
             time.sleep(2)
+            # Check if submit is now available after review transition/scroll
+            submit_after_review = page.evaluate("""() => {
+                const modal = document.querySelector('.jobs-easy-apply-modal');
+                if (!modal) return false;
+                const content = modal.querySelector('.jobs-easy-apply-modal__content, .artdeco-modal__content');
+                if (content) content.scrollTop = content.scrollHeight;
+                const btns = Array.from(modal.querySelectorAll('footer button, button'));
+                const submitBtn = btns.find(b => {
+                    const t = (b.innerText + ' ' + (b.getAttribute('aria-label') || '')).toLowerCase();
+                    return (t.includes('submit application') || t.includes('submit')) && b.offsetParent !== null && !b.disabled;
+                });
+                if (submitBtn) {
+                    submitBtn.click();
+                    return true;
+                }
+                return false;
+            }""")
+            if submit_after_review:
+                print("  [✓] Submitting application…")
+                time.sleep(3)
+                try:
+                    page.evaluate("""() => {
+                        const dismiss = document.querySelector('[role="dialog"] button[aria-label="Dismiss"], [role="dialog"] .artdeco-modal__dismiss, button[aria-label="Dismiss"]');
+                        if (dismiss) dismiss.click();
+                        const notNow = Array.from(document.querySelectorAll('button')).find(b => b.innerText.trim().toLowerCase() === 'not now');
+                        if (notNow) notNow.click();
+                    }""")
+                except Exception:
+                    pass
+                return True
             continue
 
         # ── 4. Validation errors check ───────────────────────────────────
@@ -737,6 +889,14 @@ def ensure_authenticated(page: Page):
 
         email = os.getenv("LINKEDIN_EMAIL", "")
         password = os.getenv("LINKEDIN_PASSWORD", "")
+        if not email or not password:
+            try:
+                from automation.browser import get_portal_credentials
+                u, p, _ = get_portal_credentials("https://www.linkedin.com")
+                email = email or u
+                password = password or p
+            except Exception:
+                pass
 
         user_field = None
         for inp in page.query_selector_all("input[type='email'], input#username, input[name='session_key'], input[autocomplete='username']"):
@@ -756,30 +916,61 @@ def ensure_authenticated(page: Page):
             except Exception:
                 pass
 
+        # Strictly locate the genuine LinkedIn email/password submit button.
+        # NEVER match social login buttons (Apple, Google, Microsoft, Passkey).
         submit_btn = None
-        for btn in page.query_selector_all("button"):
+        for sel in [
+            "button[data-litms-control-urn='login-submit']",
+            "button[type='submit'][aria-label='Sign in']",
+            "button[type='submit']:not([aria-label*='Apple']):not([aria-label*='Google'])",
+            "#login-submit",
+            "form[action*='login-submit'] button[type='submit']",
+            "button.btn__primary--large[type='submit']",
+        ]:
             try:
-                if btn.is_visible() and ("sign in" in btn.inner_text().strip().lower() or btn.get_attribute("type") == "submit"):
-                    submit_btn = btn
-                    break
+                btn = page.query_selector(sel)
+                if btn and btn.is_visible():
+                    text = (btn.inner_text() or "").strip().lower()
+                    aria = (btn.get_attribute("aria-label") or "").lower()
+                    if not any(soc in text or soc in aria for soc in ["apple", "google", "passkey", "qrcode"]):
+                        submit_btn = btn
+                        break
             except Exception:
                 pass
 
+        if not submit_btn:
+            for btn in page.query_selector_all("button"):
+                try:
+                    if not btn.is_visible():
+                        continue
+                    text = (btn.inner_text() or "").strip().lower()
+                    aria = (btn.get_attribute("aria-label") or "").lower()
+                    if any(soc in text or soc in aria for soc in ["apple", "google", "passkey", "qrcode"]):
+                        continue
+                    if text in ("sign in", "log in", "login") or (btn.get_attribute("type") == "submit" and "sign in" in text):
+                        submit_btn = btn
+                        break
+                except Exception:
+                    pass
+
         attempted = False
-        if user_field and pwd_field and submit_btn and email and password:
-            print("[LinkedIn Auth] Entering credentials (Single Attempt per Zero-Lockout Protocol)...")
+        if user_field and pwd_field and email and password:
+            print("[LinkedIn Auth] Entering credentials from secure store (Single Attempt per Zero-Lockout Protocol)...")
             try:
                 user_field.fill(email)
                 time.sleep(0.5)
                 pwd_field.fill(password)
                 time.sleep(0.5)
-                submit_btn.click()
+                if submit_btn and submit_btn.is_visible():
+                    submit_btn.click()
+                else:
+                    pwd_field.press("Enter")
                 attempted = True
                 time.sleep(5)
             except Exception as fe:
                 print(f"[LinkedIn Auth] Note during automated fill: {fe}")
         else:
-            print("[LinkedIn Auth] Login fields missing or already modified. Alerting user...")
+            print("[LinkedIn Auth] Login fields missing or credentials not set. Alerting user...")
 
         if not is_logged_in(page):
             print("[LinkedIn Auth] Security verification / 2FA / checkpoint detected!")
@@ -802,7 +993,15 @@ SKIP_KEYWORDS = [
     "intern", "internship", "trainee", "apprentice",
 ]
 
-def run(target: int = 10, keywords: str = None, location: str = "India", sort: str = "DD"):
+def run(
+    target: int = 40,
+    keywords: Optional[str] = None,
+    location: str = "India",
+    locations: Optional[List[str]] = None,
+    sort: str = "DD",
+    time_filter: Optional[str] = "r86400",
+    keep_open: bool = True
+):
     global RESUME_PATH
     load_env()
 
@@ -815,33 +1014,56 @@ def run(target: int = 10, keywords: str = None, location: str = "India", sort: s
     RESUME_PATH = candidates[0].resolve() if candidates else None
     print(f"[Master CV] {RESUME_PATH}")
 
-    # Build LinkedIn Easy Apply search URL
-    # keywords default to the 4 requested designations:
-    # "Data Analyst" OR "Data Consultant" OR "Data Engineer" OR "Data Scientist"
-    if not keywords:
-        keywords = '"Data Analyst" OR "Data Consultant" OR "Data Engineer" OR "Data Scientist"'
+    # Build time filter parameter (e.g. f_TPR=r86400 for past 24 hours)
+    tpr_param = ""
+    if time_filter:
+        tf_clean = time_filter.strip().lower()
+        if tf_clean in ("24h", "1d", "86400", "r86400"):
+            tpr_param = "&f_TPR=r86400"
+        elif tf_clean in ("week", "7d", "r604800"):
+            tpr_param = "&f_TPR=r604800"
+        elif tf_clean in ("month", "30d", "r2592000"):
+            tpr_param = "&f_TPR=r2592000"
+        elif tf_clean.startswith("r") or tf_clean.isdigit():
+            tpr_param = f"&f_TPR={tf_clean if tf_clean.startswith('r') else 'r' + tf_clean}"
+        else:
+            tpr_param = f"&f_TPR={time_filter}"
 
-    encoded_kw = urllib.parse.quote(keywords)
-    encoded_loc = urllib.parse.quote(location)
-    # sortBy=DD = Date Descending (newest to oldest)
-    # f_AL=true = Easy Apply
-    search_url = (
-        f"https://www.linkedin.com/jobs/search/?"
-        f"keywords={encoded_kw}"
-        f"&location={encoded_loc}"
-        f"&f_AL=true"
-        f"&sortBy={sort}"
-    )
+    # Locations queue (Priority order: e.g. Delhi NCR -> India -> Remote / International)
+    if locations:
+        locations_to_scan = locations
+    elif location:
+        locations_to_scan = [loc.strip() for loc in location.split(",") if loc.strip()]
+    else:
+        locations_to_scan = ["India"]
 
-    print(f"\n[LinkedIn Setup]")
-    print(f"  • Designations: {keywords}")
-    print(f"  • Location: {location}")
-    print(f"  • Filter: Easy Apply (f_AL=true)")
-    print(f"  • Sorting: Date Descending / Newest to Oldest (sortBy={sort})")
-    print(f"  • Target Applications: {target}")
-    print(f"  • LLM Engine: OpenRouter Free Tier (:free)")
+    # Target designations query clusters
+    if keywords and ";" in keywords:
+        queries_to_scan = [k.strip() for k in keywords.split(";") if k.strip()]
+    elif keywords and keywords.strip().lower() not in ("auto", "none", ""):
+        queries_to_scan = [keywords.strip()]
+    else:
+        # Default clusters covering candidate's target roles from profile / .env
+        queries_to_scan = [
+            '"Data Engineer" OR "Analytics Engineer" OR "Big Data"',
+            '"Data Analyst" OR "Data Consultant" OR "Analytics Consultant"',
+            '"Business Technology Consultant" OR "Solutions Architect" OR "Technical Consultant"',
+            '"Data Governance" OR "AI Engineer" OR "AI Automation Engineer"',
+            '"Technical Product Manager" OR "Marketing Analytics Consultant"'
+        ]
 
     today_applied = get_today_easy_apply_count()
+
+    print(f"\n[LinkedIn Setup]")
+    print(f"  • Locations Priority Queue: {locations_to_scan}")
+    print(f"  • Designation Clusters: {len(queries_to_scan)} queries")
+    for idx, q in enumerate(queries_to_scan, 1):
+        print(f"      [{idx}] {q}")
+    print(f"  • Filter: Easy Apply (f_AL=true)")
+    print(f"  • Sorting: Date Descending / Newest to Oldest (sortBy={sort})")
+    print(f"  • Recency Filter: {tpr_param or 'None (All time)'}")
+    print(f"  • Target Applications: {target}")
+    print(f"  • LLM Engine: OpenRouter Free Tier (:free)")
     print(f"  • Today's Easy Apply Submissions: {today_applied}/{DAILY_EASY_APPLY_LIMIT}\n")
 
     if today_applied >= DAILY_EASY_APPLY_LIMIT:
@@ -858,19 +1080,14 @@ def run(target: int = 10, keywords: str = None, location: str = "India", sort: s
         user_data_dir=str(session_dir),
         headless=False,
         no_viewport=True,
-        args=["--start-maximized", "--no-default-browser-check"]
+        args=["--start-maximized", "--no-default-browser-check", "--disable-gpu", "--disable-extensions"]
     )
     page = browser.pages[0] if browser.pages else browser.new_page()
 
     # Step 1: Ensure authenticated
     ensure_authenticated(page)
 
-    # Step 2: Navigate to sorted Easy Apply job list
-    print(f"\n[Search] Navigating to: {search_url}")
-    page.goto(search_url, wait_until="domcontentloaded")
-    time.sleep(4)
-
-    # Step 3: Load previously applied records
+    # Step 2: Load previously applied records
     applied_urls = set()
     if TRACKER_CSV.exists():
         try:
@@ -888,168 +1105,272 @@ def run(target: int = 10, keywords: str = None, location: str = "India", sort: s
     print(f"[Tracker] Loaded {len(applied_urls)} previously applied records for deduplication.")
 
     applied = 0
-    page_num = 1
-    total_tokens_spent = 0
 
-    while applied < target:
-        print(f"\n{'='*55}")
-        print(f"[Scan] Page {page_num}  |  Applied {applied}/{target}  |  LLM Mode: OpenRouter Free")
-        print(f"{'='*55}")
-
-        # Collect job IDs from search list
-        job_ids = []
-        for card in page.query_selector_all("[data-occludable-job-id]"):
-            jid = card.get_attribute("data-occludable-job-id")
-            if jid and jid not in job_ids:
-                job_ids.append(jid)
-
-        if not job_ids:
-            for card in page.query_selector_all(".job-card-container, [data-job-id], li.jobs-search-results__list-item"):
-                jid = card.get_attribute("data-job-id") or card.get_attribute("data-occludable-job-id")
-                if not jid:
-                    link = card.query_selector("a[href*='jobs/view']")
-                    if link:
-                        href = link.get_attribute("href") or ""
-                        m = re.search(r"jobs/view/(\d+)", href)
-                        if m:
-                            jid = m.group(1)
-                if jid and jid not in job_ids:
-                    job_ids.append(jid)
-
-        if not job_ids:
-            print("[!] No job listings found on this page. Checking if search needs refresh...")
-            time.sleep(3)
-            # Second attempt after brief scroll
-            page.evaluate("window.scrollTo(0, 300);")
-            time.sleep(2)
-            for card in page.query_selector_all("[data-occludable-job-id], .job-card-container, a[href*='jobs/view']"):
-                jid = card.get_attribute("data-occludable-job-id") or card.get_attribute("data-job-id")
-                if not jid:
-                    href = card.get_attribute("href") or ""
-                    m = re.search(r"jobs/view/(\d+)", href)
-                    if m:
-                        jid = m.group(1)
-                if jid and jid not in job_ids:
-                    job_ids.append(jid)
-
-        if not job_ids:
-            print("[!] No job listings found on this page.")
+    # Step 3: Iterate through locations and designation clusters
+    for loc in locations_to_scan:
+        if applied >= target or (today_applied + applied) >= DAILY_EASY_APPLY_LIMIT:
             break
 
-        print(f"[Scan] {len(job_ids)} listings found on page {page_num}.")
+        print(f"\n{'#'*65}")
+        print(f"  [Location Priority Target] Scanning: {loc}")
+        print(f"{'#'*65}")
 
-        for jid in job_ids:
-            if applied >= target:
-                break
-            if (today_applied + applied) >= DAILY_EASY_APPLY_LIMIT:
-                print(f"\n[Safety Gate] Reached daily safety ceiling of {DAILY_EASY_APPLY_LIMIT} Easy Apply applications today.")
-                alert("Easy Apply Daily Limit", f"Completed {DAILY_EASY_APPLY_LIMIT} applications today. Pausing safely.")
-                applied = target
+        for kw in queries_to_scan:
+            if applied >= target or (today_applied + applied) >= DAILY_EASY_APPLY_LIMIT:
                 break
 
-            if jid in applied_urls or f"https://www.linkedin.com/jobs/view/{jid}/" in applied_urls:
-                print(f"  [-] Job {jid} already applied previously. Skipping.")
-                continue
+            canonical_loc, geo_id = resolve_linkedin_geo(loc)
+            encoded_kw = urllib.parse.quote(kw)
+            encoded_loc = urllib.parse.quote(canonical_loc)
+            geo_param = f"&geoId={geo_id}" if geo_id else ""
+            search_url = (
+                f"https://www.linkedin.com/jobs/search/?"
+                f"keywords={encoded_kw}"
+                f"&location={encoded_loc}"
+                f"{geo_param}"
+                f"&f_AL=true"
+                f"&sortBy={sort}"
+                f"{tpr_param}"
+            )
 
+            print(f"\n[Search URL] {search_url}")
             try:
-                clear_all_overlays(page)
+                page.goto(search_url, wait_until="domcontentloaded")
+                time.sleep(3.5)
+            except Exception as ge:
+                print(f"[Navigation Note] {ge}")
 
-                card = page.query_selector(f"[data-occludable-job-id='{jid}'], [data-job-id='{jid}'], a[href*='{jid}']")
-                if not card:
-                    continue
+            page_num = 1
 
-                card.scroll_into_view_if_needed()
-                time.sleep(0.5)
-                try:
-                    card.click(timeout=3000)
-                except Exception:
-                    page.evaluate("(el) => el.click()", card)
-                time.sleep(2)
-
-                t_el = page.query_selector(
-                    ".job-details-jobs-unified-top-card__job-title, "
-                    ".jobs-unified-top-card__job-title, h1"
-                )
-                c_el = page.query_selector(
-                    ".job-details-jobs-unified-top-card__company-name, "
-                    ".jobs-unified-top-card__company-name"
-                )
-                title = t_el.inner_text().strip() if t_el else f"Job {jid}"
-                company = c_el.inner_text().strip() if c_el else "Unknown Company"
-
-                print(f"\n→ [{applied+1}/{target}] {title} @ {company}")
-
-                # Check technology exclusions
-                if any(bad in title.lower() for bad in SKIP_KEYWORDS):
-                    print("  [-] Skipped due to exclusion rule (e.g. Java, DevOps, Internship).")
-                    continue
-
-                ok = apply_to_current_job(page)
-                if ok:
-                    applied += 1
-                    applied_urls.add(jid)
-                    applied_urls.add(f"https://www.linkedin.com/jobs/view/{jid}/")
-                    print(f"  [✓] Successfully Applied! Progress: {applied}/{target}")
-                    
-                    try:
-                        record_application(
-                            company=company,
-                            role=title,
-                            job_url=f"https://www.linkedin.com/jobs/view/{jid}/",
-                            cv_path=str(RESUME_PATH.relative_to(ROOT_DIR)) if RESUME_PATH else "cv/Ankit_Resume_v4.pdf"
-                        )
-                    except Exception as le:
-                        print(f"  [!] Tracker recording note: {le}")
-                    time.sleep(2)
-                else:
-                    print("  [-] Could not complete application for this job.")
-
-            except RuntimeError as re_err:
-                if "LINKEDIN_DAILY_LIMIT_REACHED" in str(re_err):
-                    print("\n[!] Immediate stop triggered: LinkedIn daily application limit detected.")
+            while applied < target and page_num <= 10:
+                if (today_applied + applied) >= DAILY_EASY_APPLY_LIMIT:
+                    print(f"\n[Safety Gate] Reached daily safety ceiling of {DAILY_EASY_APPLY_LIMIT} Easy Apply applications today.")
+                    alert("Easy Apply Daily Limit", f"Completed {DAILY_EASY_APPLY_LIMIT} applications today. Pausing safely.")
                     applied = target
                     break
-                else:
-                    err_summary = str(re_err).splitlines()[0]
-                    print(f"  [!] Error processing job {jid}: {err_summary}")
-                    clear_all_overlays(page)
-                    time.sleep(1)
-            except Exception as e:
-                err_summary = str(e).splitlines()[0]
-                print(f"  [!] Error processing job {jid}: {err_summary}")
-                clear_all_overlays(page)
-                time.sleep(1)
 
-        # Pagination
-        if applied < target:
-            nxt = (
-                page.query_selector(f"button[aria-label='Page {page_num + 1}']")
-                or page.query_selector(".artdeco-pagination__button--next")
-            )
-            if nxt and nxt.is_visible() and not nxt.is_disabled():
-                page.evaluate("(el) => el.click()", nxt)
-                page_num += 1
-                time.sleep(4)
-            else:
-                print("[Scan] No further pages available.")
-                break
+                print(f"\n{'='*55}")
+                print(f"[Scan] Loc: {loc} | Query: {kw[:35]}... | Page {page_num} | Applied {applied}/{target}")
+                print(f"{'='*55}")
+
+                # Scroll results list to ensure lazy-loaded cards render
+                try:
+                    page.evaluate("""() => {
+                        const list = document.querySelector('.jobs-search-results-list, .scaffold-layout__list-detail-inner, .scaffold-layout__list') || window;
+                        list.scrollTop = list.scrollHeight / 2;
+                    }""")
+                    time.sleep(1)
+                    page.evaluate("""() => {
+                        const list = document.querySelector('.jobs-search-results-list, .scaffold-layout__list-detail-inner, .scaffold-layout__list') || window;
+                        list.scrollTop = list.scrollHeight;
+                    }""")
+                    time.sleep(1)
+                except Exception:
+                    pass
+
+                # Collect job IDs from search list
+                job_ids = []
+                for card in page.query_selector_all("[data-occludable-job-id]"):
+                    jid = card.get_attribute("data-occludable-job-id")
+                    if jid and jid not in job_ids:
+                        job_ids.append(jid)
+
+                if not job_ids:
+                    for card in page.query_selector_all(".job-card-container, [data-job-id], li.jobs-search-results__list-item"):
+                        jid = card.get_attribute("data-job-id") or card.get_attribute("data-occludable-job-id")
+                        if not jid:
+                            link = card.query_selector("a[href*='jobs/view']")
+                            if link:
+                                href = link.get_attribute("href") or ""
+                                m = re.search(r"jobs/view/(\d+)", href)
+                                if m:
+                                    jid = m.group(1)
+                        if jid and jid not in job_ids:
+                            job_ids.append(jid)
+
+                if not job_ids:
+                    print(f"  [Scan] No further job listings found for this query on page {page_num}.")
+                    break
+
+                print(f"[Scan] {len(job_ids)} listings found on page {page_num}.")
+
+                for jid in job_ids:
+                    if applied >= target:
+                        break
+                    if (today_applied + applied) >= DAILY_EASY_APPLY_LIMIT:
+                        print(f"\n[Safety Gate] Reached daily safety ceiling of {DAILY_EASY_APPLY_LIMIT} Easy Apply applications today.")
+                        alert("Easy Apply Daily Limit", f"Completed {DAILY_EASY_APPLY_LIMIT} applications today. Pausing safely.")
+                        applied = target
+                        break
+
+                    if jid in applied_urls or f"https://www.linkedin.com/jobs/view/{jid}/" in applied_urls:
+                        print(f"  [-] Job {jid} already applied previously. Skipping.")
+                        continue
+
+                    try:
+                        clear_all_overlays(page)
+
+                        card = page.query_selector(f"[data-occludable-job-id='{jid}'], [data-job-id='{jid}'], a[href*='{jid}']")
+                        if not card:
+                            continue
+
+                        card.scroll_into_view_if_needed()
+                        time.sleep(0.5)
+                        try:
+                            card.click(timeout=3000)
+                        except Exception:
+                            page.evaluate("(el) => el.click()", card)
+                        time.sleep(2)
+
+                        t_el = page.query_selector(
+                            ".job-details-jobs-unified-top-card__job-title, "
+                            ".jobs-unified-top-card__job-title, h1"
+                        )
+                        c_el = page.query_selector(
+                            ".job-details-jobs-unified-top-card__company-name, "
+                            ".jobs-unified-top-card__company-name"
+                        )
+                        l_el = page.query_selector(
+                            ".job-details-jobs-unified-top-card__primary-description-container, "
+                            ".jobs-unified-top-card__bullet, "
+                            ".job-card-container__metadata-item"
+                        )
+                        title = t_el.inner_text().strip() if t_el else f"Job {jid}"
+                        company = c_el.inner_text().strip() if c_el else "Unknown Company"
+                        job_loc = l_el.inner_text().strip() if l_el else ""
+
+                        # Strict India‑only location guard (skip if location provided but not India)
+                        if job_loc and "india" not in job_loc.lower():
+                            print(f"  [-] Skipped non‑India location: '{job_loc}'.")
+                            continue
+
+                        print(f"\n→ [{applied+1}/{target}] {title} @ {company} ({job_loc or loc})")
+
+                        # # Strict India‑only location guard (legacy, disabled)
+                        # non_india_indicators = [
+                        #     "united states", "usa", ", us", ", mi", "michigan", ", ca", "california",
+                        #     ", ny", "new york", ", tx", "texas", "united kingdom", ", uk", "canada", "australia"
+                        # ]
+                        # # If LinkedIn provides a location string, ensure it contains 'india'
+                        # if job_loc:
+                        #     if any(term in job_loc.lower() for term in non_india_indicators) or "india" not in job_loc.lower():
+                        #         print(f"  [-] Skipped non‑India location: '{job_loc}'.")
+                        #         continue
+                        # non_india_indicators = [
+                        #     "united states", "usa", ", us", ", mi", "michigan", ", ca", "california",
+                        #     ", ny", "new york", ", tx", "texas", "united kingdom", ", uk", "canada", "australia"
+                        # ]
+                        # if any(term in job_loc.lower() for term in non_india_indicators) and "india" not in job_loc.lower():
+                        #     print(f"  [-] Skipped non-India location: '{job_loc}' (US/Michigan guard triggered).")
+                        #     continue
+
+                        # Check technology exclusions
+                        if any(bad in title.lower() for bad in SKIP_KEYWORDS):
+                            print("  [-] Skipped due to exclusion rule (e.g. Java, DevOps, Internship).")
+                            continue
+
+                        ok = apply_to_current_job(page)
+                        if ok:
+                            applied += 1
+                            applied_urls.add(jid)
+                            applied_urls.add(f"https://www.linkedin.com/jobs/view/{jid}/")
+                            print(f"  [✓] Successfully Applied! Progress: {applied}/{target}")
+                            
+                            try:
+                                record_application(
+                                    company=company,
+                                    role=title,
+                                    job_url=f"https://www.linkedin.com/jobs/view/{jid}/",
+                                    cv_path=str(RESUME_PATH.relative_to(ROOT_DIR)) if RESUME_PATH else "cv/Ankit_Resume_v4.pdf"
+                                )
+                            except Exception as le:
+                                print(f"  [!] Tracker recording note: {le}")
+                            time.sleep(2)
+                        else:
+                            print("  [-] Could not complete application for this job.")
+
+                    except RuntimeError as re_err:
+                        if "LINKEDIN_DAILY_LIMIT_REACHED" in str(re_err):
+                            print("\n[!] Immediate stop triggered: LinkedIn daily application limit detected.")
+                            applied = target
+                            break
+                        else:
+                            err_summary = str(re_err).splitlines()[0]
+                            print(f"  [!] Error processing job {jid}: {err_summary}")
+                            clear_all_overlays(page)
+                            time.sleep(1)
+                    except Exception as e:
+                        err_summary = str(e).splitlines()[0]
+                        print(f"  [!] Error processing job {jid}: {err_summary}")
+                        if "closed" in err_summary.lower() or (hasattr(page, "is_closed") and page.is_closed()):
+                            print("  [!] Target browser or page was closed. Exiting search loop.")
+                            break
+                        clear_all_overlays(page)
+                        time.sleep(1)
+
+                if hasattr(page, "is_closed") and page.is_closed():
+                    print("  [!] Page was closed, stopping pagination.")
+                    break
+
+                # Pagination
+                if applied < target:
+                    try:
+                        nxt = (
+                            page.query_selector(f"button[aria-label='Page {page_num + 1}']")
+                            or page.query_selector(".artdeco-pagination__button--next")
+                        )
+                        if nxt and nxt.is_visible() and not nxt.is_disabled():
+                            page.evaluate("(el) => el.click()", nxt)
+                            page_num += 1
+                            time.sleep(3.5)
+                        else:
+                            print(f"[Scan] No further pages for this query in {loc}.")
+                            break
+                    except Exception as pe:
+                        print(f"[Scan Note] Pagination note: {pe}")
+                        break
 
     print(f"\n{'='*55}")
     print(f"[Execution Summary] Applied {applied}/{target} Easy Apply jobs.")
-    print(f"  • Roles: {keywords}")
+    print(f"  • Locations scanned: {locations_to_scan}")
     print(f"  • Sort: Date Descending (Newest to Oldest)")
+    print(f"  • Recency Filter: {time_filter or 'None'}")
     print(f"  • Q&A Engine: OpenRouter Free Models & Knowledge Base")
     print(f"  • Tracker: Synchronized with {TRACKER_CSV.name} and {JOBS_DB.name}")
     print(f"  • Browser: Preserved interactive per Rule 2.3.")
     print(f"{'='*55}\n")
 
+    if keep_open:
+        print("[Rule 2.3 Directive] Browser remains permanently open and interactive on display.")
+        print("[Status] Automation completed. Browser window is active.")
+        try:
+            # Keep script alive so Playwright persistent context remains open
+            while True:
+                time.sleep(2)
+        except (KeyboardInterrupt, SystemExit):
+            pass
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="LinkedIn Easy Apply Runner with OpenRouter Free")
-    parser.add_argument("count", nargs="?", type=int, default=10, help="Number of applications (default: 10)")
-    parser.add_argument("--keywords", "-k", type=str, default='"Data Analyst" OR "Data Consultant" OR "Data Engineer" OR "Data Scientist"', help="Designations search query")
-    parser.add_argument("--location", "-l", type=str, default="India", help="Location filter (default: India)")
+    parser.add_argument("count", nargs="?", type=int, default=40, help="Number of applications (default: 40)")
+    parser.add_argument("--keywords", "-k", type=str, default="auto", help="Designations search query or semicolon-separated queries (default: auto)")
+    parser.add_argument("--location", "-l", type=str, default="Delhi NCR, India", help="Comma-separated location priority queue (India only, NCR prioritized)")
+    parser.add_argument("--locations", type=str, default=None, help="Alias for comma-separated locations queue")
+    parser.add_argument("--time-filter", "-t", type=str, default="r86400", help="Recency filter: r86400 / 24h (default: r86400)")
     parser.add_argument("--sort", "-s", type=str, default="DD", choices=["DD", "R"], help="DD = Date Descending (newest to old), R = Relevant")
+    parser.add_argument("--no-keep-open", action="store_true", help="Do not keep browser loop active at end")
     args = parser.parse_args()
 
-    run(target=args.count, keywords=args.keywords, location=args.location, sort=args.sort)
+    loc_str = args.locations or args.location
+    locations_list = [loc.strip() for loc in loc_str.split(",") if loc.strip()]
+
+    run(
+        target=args.count,
+        keywords=args.keywords,
+        locations=locations_list,
+        sort=args.sort,
+        time_filter=args.time_filter,
+        keep_open=not args.no_keep_open
+    )
+

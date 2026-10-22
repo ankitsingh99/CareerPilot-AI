@@ -143,27 +143,6 @@ def ask_openrouter_free_llm(question: str, options: Optional[List[str]] = None, 
 
     cand = load_candidate_context()
 
-    # ── Local deterministic fast resolution to preserve OpenRouter quota ─────
-    q_low = question.lower()
-    if field_type == "number":
-        for pat in QASemanticsEngine.EXCLUDED_TECH_PATTERNS:
-            if re.search(pat, q_low):
-                return "0"
-        return cand["yoe_int"]
-
-    if field_type == "radio" and options:
-        if any(k in q_low for k in ["sponsorship", "referral", "relationship", "felony", "crime", "non-compete"]):
-            for opt in options:
-                if opt.lower().startswith("no") or "no" in opt.lower():
-                    return opt
-        for opt in options:
-            if opt.lower().startswith("yes") or "yes" in opt.lower():
-                return opt
-        return options[0]
-
-    if field_type == "select" and options:
-        return options[0]
-
     try:
         from intelligence.llm_clients.openrouter import ask
     except ImportError:
@@ -172,6 +151,8 @@ def ask_openrouter_free_llm(question: str, options: Optional[List[str]] = None, 
         "You are an ATS job application form filler representing the candidate.\n"
         "Your duty is to output ONLY the exact, factual string to enter or select into the form.\n"
         "Do NOT provide explanations, pleasantries, markdown, or commentary.\n"
+        "CRITICAL RULE: Whenever experience, tenure, or duration is asked (e.g. years of experience, days notice, joining time, duration with a tool), "
+        "NEVER write 'year', 'month', 'day', or decimals. Just write the integer value (e.g. 4 or 0).\n"
         f"Candidate: {cand['name']}\n"
         f"Designation: {cand['designation']}\n"
         f"Total Experience: {cand['total_yoe']} years\n"
@@ -200,8 +181,37 @@ def ask_openrouter_free_llm(question: str, options: Optional[List[str]] = None, 
 
     try:
         response = ask(user_prompt, system=system_prompt, model="auto", max_tokens=150)
-        ans = response.strip().strip('"').strip("'").strip()
+        raw = response.strip()
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+        valid_lines = [
+            ln for ln in lines
+            if not any(ln.lower().startswith(p) for p in [
+                "we need", "so for", "field question", "the instruction",
+                "candidate", "i would", "here is", "likely", "probably", "note:"
+            ])
+        ]
+        ans = valid_lines[-1].strip('"').strip("'").strip() if valid_lines else (lines[-1].strip('"').strip("'").strip() if lines else raw.strip('"').strip("'").strip())
+        if field_type != "textarea" and len(ans) > 70 and any(w in ans.lower() for w in ["we need", "candidate", "instruction", "field label", "preferred name", "likely"]):
+            ans = ""
         if ans:
+            if options:
+                ans_lower = ans.lower().strip()
+                matched_opt = None
+                for opt in options:
+                    if opt.strip().lower() == ans_lower:
+                        matched_opt = opt.strip()
+                        break
+                if not matched_opt:
+                    for opt in options:
+                        opt_c = opt.strip().lower()
+                        if opt_c in ("select an option", "select", "please select", "none", ""):
+                            continue
+                        if ans_lower in opt_c or opt_c in ans_lower:
+                            matched_opt = opt.strip()
+                            break
+                if matched_opt:
+                    ans = matched_opt
             _SEMIN_CACHE[cache_key] = ans
             save_novel_qa_to_kb(question, ans)
             return ans
@@ -261,7 +271,59 @@ class QASemanticsEngine:
         return None
 
     @classmethod
+    def sanitize_experience_or_duration(cls, ans: str, lbl: str, field_type: str = "text") -> str:
+        """
+        Enforce strict user directive:
+        Whenever experience, tenure, or duration is asked, never write 'year', 'month', or 'day',
+        just write the integer value (e.g. 0, 4).
+        """
+        if not ans or ans == "N/A" or field_type in ("textarea", "radio", "select"):
+            return ans
+
+        # Check if question asks about experience, tenure, duration, years, days, months
+        is_exp_or_dur = any(k in lbl for k in [
+            "experience", "yoe", "years of", "how many years", "how many days", "how many months",
+            "number of years", "work experience", "notice period in days", "days notice", "duration",
+            "months of experience", "years have you", "in how many days", "tenure"
+        ])
+
+        # If answer has patterns like '0 years', '4 years', '4.8 years', '0 days', '15 days'
+        unit_match = re.match(r"^\s*(\d+(?:\.\d+)?)\s*(?:years?|yrs?|months?|mos?|days?)\s*$", ans, re.IGNORECASE)
+        if unit_match:
+            try:
+                return str(int(float(unit_match.group(1))))
+            except ValueError:
+                pass
+
+        if is_exp_or_dur:
+            m = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:years?|yrs?|months?|days?)?\b", ans, re.IGNORECASE)
+            if m:
+                try:
+                    return str(int(float(m.group(1))))
+                except ValueError:
+                    pass
+
+        return ans
+
+    @classmethod
     def match_question(
+        cls,
+        label: str,
+        field_type: str = "text",
+        options: Optional[List[str]] = None,
+        upper_salary: Optional[Tuple[str, str]] = None
+    ) -> str:
+        res = cls._match_question_core(
+            label=label,
+            field_type=field_type,
+            options=options,
+            upper_salary=upper_salary
+        )
+        lbl_clean = (label or "").strip().lower()
+        return cls.sanitize_experience_or_duration(res, lbl_clean, field_type=field_type)
+
+    @classmethod
+    def _match_question_core(
         cls,
         label: str,
         field_type: str = "text",
@@ -390,13 +452,22 @@ class QASemanticsEngine:
         if any(k in lbl for k in [
             "notice period", "notice days", "availability", "how soon", "joining time",
             "earliest start date", "available to start", "days notice", "how many days notice",
-            "serving notice", "notice period in days", "availability to join"
+            "serving notice", "notice period in days", "availability to join",
+            "how many days can you join", "in how many days"
         ]):
-            if field_type == "number":
+            if field_type == "number" or any(k in lbl for k in ["day", "days", "in days", "how many days", "month", "months"]):
                 return cand["notice_period_days"]
             return cand["notice_period_text"]
 
         # ── 5. CONTACT & PERSONAL IDENTITY ───────────────────────────────────────
+        # Referral question guard (must precede name matching to avoid capturing "first and last name of employee")
+        if any(k in lbl for k in ["referred to this position", "referred by a", "referral", "employee referral", "who referred you"]):
+            if field_type in ["select", "radio", "checkbox"]:
+                return "No"
+            return ""
+
+        if any(k in lbl for k in ["preferred name", "preferred", "nickname", "custpreferredname"]):
+            return cand["first_name"]
         if any(k in lbl for k in ["phone", "mobile", "telephone", "contact number", "cell"]):
             return cand["phone"]
         if any(k in lbl for k in ["email", "e-mail", "email address"]):
@@ -415,6 +486,19 @@ class QASemanticsEngine:
             return cand["pincode"]
         if any(k in lbl for k in ["street address", "address line 1", "residential address", "home address"]):
             return cand["address"]
+
+        # ── 5.5 PROFESSIONAL REFERENCES (STRICT ZERO-FABRICATION RULE) ───────────
+        # Consent/permission to contact references is Yes, but candidate has not provided
+        # external reference person details. NEVER pull names/contacts out of thin air.
+        if any(k in lbl for k in ["contact your references", "contact references", "may we contact", "permission to contact"]):
+            return "Yes"
+        if any(k in lbl for k in [
+            "reference name", "ref name", "custname", "reference contact", "ref contact",
+            "reference phone", "ref phone", "custphone", "reference email", "ref email", "custemail",
+            "reference occupation", "ref occupation", "custoccupat", "reference company", "ref company", "custcompany",
+            "years of working together", "years known", "years working", "custyears", "reference title"
+        ]):
+            return ""
 
         # ── 6. EDUCATION & ACADEMICS ─────────────────────────────────────────────
         if any(k in lbl for k in ["gpa", "cgpa", "grade", "percentage", "academic score", "marks"]):
@@ -441,6 +525,12 @@ class QASemanticsEngine:
             return cand["yoe_int"]
 
         # ── 10. COMPLIANCE & LEGAL SCREENING (YES / NO) ──────────────────────────
+        # Referral question (text vs boolean)
+        if any(k in lbl for k in ["referred to this position", "referred by a current employee", "referral name", "employee referral"]):
+            if field_type in ["select", "radio", "checkbox"]:
+                return "No"
+            return ""
+
         # Negative compliance questions (Always 'No')
         if any(k in lbl for k in [
             "visa sponsorship", "require sponsorship", "need sponsorship", "require visa",

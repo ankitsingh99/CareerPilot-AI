@@ -1,90 +1,77 @@
 # AI Job Search: Session Handoff Document
-**Last Updated:** 2026-10-20 13:00:00 IST
-**Active Git Branch / Commit:** `master` @ `origin/master` (Clean Squashed Release v1.2.0)
-**Repository Visibility:** Public ([https://github.com/ankitsingh99/ai-job-search](https://github.com/ankitsingh99/ai-job-search))
-**Model Context Status:** Optimal (Clean Context Handoff)
+**Last Updated:** 2026-10-22 11:35:00 IST  
+**Active Git Branch / Commit:** `master` @ `origin/master` (Universal Automation Framework v1.2.0)  
+**Repository Visibility:** Public ([https://github.com/ankitsingh99/ai-job-search](https://github.com/ankitsingh99/ai-job-search))  
+**Model Context Status:** Optimal (Clean Context Handoff)  
 
 ---
 
 ## 1. Executive Summary & Accomplishments
 
-### 1. Python 3.15 Native Interpreter Lazy Imports Migration
-- Upgraded virtual environment and project toolchain to CPython 3.15.0rc3 (`.python-version` pinned to 3.15, `pyproject.toml` with `>=3.15`).
-- Enabled native interpreter-level lazy module deferral (`PYTHON_LAZY_IMPORTS=all` via PEP 690 / PEP 810).
-- Created `utils/lazy_bootstrap.py` which activates `sys.set_lazy_imports('all')`.
-- Heavy modules (`numpy`, `playwright`, `docx`, `sqlite3`) are deferred in `sys.lazy_modules` until attribute access, achieving sub-millisecond CLI startup and minimal memory footprint.
-- Verified test suite: 400 passed, 1 skipped in 7.52s.
+### 1. AlphaSense - Business Analyst II Application (Greenhouse ATS)
+- **Role & Company:** Business Analyst II, Content Strategy, Planning & Analysis team at AlphaSense.
+- **Application URL:** `https://job-boards.greenhouse.io/alphasense/jobs/8857586002?gh_src=8a5751f62us`.
+- **Form Automation & Autofill:**
+  - Standard candidate details populated from local `.env` (First Name, Last Name, Preferred Name `Ankit`, Email, Country `India +91`, Phone, Location `Noida, Uttar Pradesh, India`).
+  - Dual document attachments uploaded: Master CV (`cv/Ankit_Resume_v4.pdf`) and tailored Cover Letter (`cover_letters/cover_alphasense_business_analyst_ii.docx` and `.md`).
+  - Screening questions cross-validated against actual options dynamically loaded in the portal dropdowns:
+    - *BI & Data Analysis Experience:* `Yes` (options `['Yes', 'No']`).
+    - *Tableau / Looker / Power BI Experience:* `Yes` (options `['Yes', 'No']`).
+    - *SQL / Python / R Experience:* `Yes` (options `['Yes', 'No']`).
+    - *Notice Period:* `0 to 15 days` (options `['0 to 15 days', '30 days', '45 days', '60 days', '90 days']` aliased to candidate's immediate availability).
+    - *Candidate Privacy Notice Consent:* `Yes` (options `['Yes']`).
+  - **Full-Form Error Verification:** 0 error elements remaining (`.select__label--error: 0`, `.input__error: 0`, `[aria-invalid='true']: 0`).
+  - **Artifacts:** Pre-submit audit report at `documents/applications/alphasense_business_analyst_ii/pre_submit_audit.md` and screenshot at `pre_submit_form.png`.
+  - **Live Browser Status:** Headed browser preserved open and interactive on display.
 
-### 2. Universal Master Blueprint Architecture (`MASTER_TEMPLATE.md`)
-- Created `MASTER_TEMPLATE.md` as the single candidate-agnostic blueprint containing all system directives, application workflows, ATS screening question databases, and behavioral rules.
-- Built `tools/generate_workspace_from_master.py` with:
-  - Automatic workspace instantiation from `.env` (`python tools/generate_workspace_from_master.py`).
-  - Workspace reset to clean templates (`--clean`).
-  - Automated PII auditing across all tracked git files (`--audit-pii`).
+### 2. Universal Automation Engine Hardening (`automation/browser.py`)
+- **Dropdown Option Cross-Validation & Safe Menu Dismissal:** Upgraded `select_react_option` to query actual available options in the active menu, perform exact and semantic alias matching (e.g. `immediate` -> `0 to 15 days`), and dismiss with `Escape` rather than pressing `Enter` into the form, preventing premature submission and unintended validation errors.
+- **Preferred Name & Technical Question Ingestion:** Added automatic support for `#preferred_name`, BI due diligence, BI visualization, SQL/Python/R querying, and privacy consent across modern Greenhouse / React-Select forms.
+- **Post-Fill Error Audit:** Integrated automated full-page error scanning into `_apply_greenhouse` to verify clean form state before human review.
 
-### 3. Complete Zero-PII Git Isolation & Repository Public Release
-- **Local Files Retain Full Authenticity:** Master CVs (`cv/*.pdf`), generated cover letters (`cover_letters/*.md`), application tracking logs (`latest_application.md`, `job_search_tracker.csv`, `jobs.db`), and candidate credentials (`.env`, `~/.config/job-agent/client_secret.json`) are stored locally on disk and excluded by `.gitignore`.
-- **Zero PII in Git:** All working modules (`automation/browser.py`, `core/db.py`, `core/tracker.py`, etc.) dynamically query `.env` without falling back to hardcoded dates of birth, phone numbers, or addresses.
-- **Clean Squashed History:** Cleaned and squashed git history on `master` to guarantee 0 past PII leaks in `git log`. Created local safety backup branch `backup-pre-squash-history`.
-- **Public Visibility Enabled:** Pushed clean master to GitHub and made `ankitsingh99/ai-job-search` public via GitHub CLI.
+### 3. Self-Learning & Adaptive Evaluator Engine & Skill
+- Registered skill: `.agents/skills/self-learning-adaptive-evaluator/SKILL.md`.
+- Implemented core evaluator engine: `core/adaptive_evaluator.py`.
+- Automated invariant unit tests: `tests/test_adaptive_evaluator.py`.
+- Five permanent learned directives codified across `.agents/rules/05_APPLICATION_LEARNING_AND_ADAPTATION.md` and `user_inputs/candidate_preferences_and_rules.md`:
+  1. *Zero Reference Person Fabrication:* Leave reference person fields empty unless provided; permission to contact is `Yes`.
+  2. *College-Only Education Default:* Prune to single university degree; do not add 10th or 12th schooling unasked.
+  3. *Omit Scores / CGPA Unless Mandatory:* Leave grade fields blank unless explicitly marked mandatory (`*`).
+  4. *Mandatory Date Population:* Enforce start and end dates for all roles and degrees (including UI5 shadow DOM web components).
+  5. *Rush by Kira Domain Spec:* Strictly classified as `Retail` / `D2C Retail & E-Commerce Operations`.
 
-### 4. Zero-Cost OpenRouter Free Tier Integration
-- Enforced strict zero-cost policy for all AI tasks. Only open-source models ending in `:free` are queried (`cohere/north-mini-code:free`, `google/gemma-4-31b-it:free`, `qwen/qwen3.8-27b:free`, `nvidia/nemotron-3.5-lightning:free`).
-- Built-in text compression, prompt caching layout, and max token caps.
-
-### 5. Author Attributions Standardized
-- All code file headers and `pyproject.toml` uniformly specify: `Author: Ankit Kumar Singh`.
+### 4. Zero-Cost OpenRouter Free Tier Catalog
+- Synced 18 active free models (`cohere/north-mini-code:free`, `google/gemma-4-31b-it:free`, `minimax/minimax-m3.1-flash:free`, `nvidia/nemotron-3.5-lightning:free`) in `openrouter_free_models.txt`.
+- Guaranteed $0.00 spend across all operations.
 
 ---
 
 ## 2. Core Architecture & Single Sources of Truth
 
-- **Master Blueprint:** [`MASTER_TEMPLATE.md`](file:///Users/ashish/git/ai-job-search/MASTER_TEMPLATE.md)
-- **Unified Agent Instructions:** [`AGENTS.md`](file:///Users/ashish/git/ai-job-search/AGENTS.md)
-- **Local Credentials & PII (Local Only):** `.env` & `~/.config/job-agent/client_secret.json`
-- **Master Resume:** Dynamically loaded from `.env` (`CANDIDATE_MASTER_RESUME`) or latest `cv/*.pdf`
+- **Master Blueprint:** `MASTER_TEMPLATE.md`
+- **Unified Agent Instructions:** `AGENTS.md`
+- **Candidate Preferences & Rules:** `user_inputs/candidate_preferences_and_rules.md`
 - **Universal Automation Runner:** `tools/ats_runner.py` (headed Playwright with persistent browser)
-- **Anti-AI TurnItOut Engine:** `parsers/turnitout_engine.py` & `tools/turnitout_humanizer.py`
-- **Local Database (Local Only):** `jobs.db` & `job_search_tracker.csv` via `tools/sync_tracker.py`
+- **Universal Browser Modules:** `automation/browser.py` & `core/qa_semantics_engine.py`
+- **Adaptive Evaluator Engine:** `core/adaptive_evaluator.py`
+- **Tracker & Local Database:** `user_inputs/job_search_tracker.csv` & `jobs.db` via `tools/sync_tracker.py`
 
 ---
 
 ## 3. Strict Operating Directives (Active)
 
 1. **NEVER Close the Browser Window:** Under no circumstances must automation close the browser. Always leave the browser open and interactive for human verification.
-2. **Zero PII in Git:** Never commit candidate phone numbers, email addresses, dates of birth, or street addresses to git. Verify before pushing with `python tools/generate_workspace_from_master.py --audit-pii`.
+2. **Zero PII in Git:** Never commit candidate phone numbers, email addresses, dates of birth, or street addresses to git. Verify before pushing with `bash tools/quality_gate.sh`.
 3. **Strict Zero-Cost OpenRouter Directive:** Exclusively use free-tier models ending in `:free`. Never incur billable API costs.
 4. **No Em Dashes (`—`):** Never use em dashes. Use standard hyphens (`-`), commas, colons, or parentheses.
 5. **Python 3.15 Native Lazy Imports:** Maintain `PYTHON_LAZY_IMPORTS=all` in `.env` and `utils/lazy_bootstrap.py`.
-6. **Attachment Sanitization Guardrail:** Never inject candidate personal identity into comments/notes inputs. Master CV must have `Resume / CV: Yes` & `Relevant Files: Yes`; Cover Letters must have `Relevant Files: Yes`; older CVs deleted/unselected.
-7. **High-Velocity Sub-Minute Execution:** Follow `benchmarks/fast_ats_execution_architecture.md` (atomic batch DOM injection, proactive dialog confirmation, zero arbitrary `time.sleep()`).
+6. **Token-Lean Architecture:** All code must be reusable; no single-use scripts.
+7. **Cover Letter Pairing in `cover_letters/`:** Maintain paired `.md` and `.docx` files with matching names (`cover_<company>_<role>.md` and `cover_<company>_<role>.docx`).
 
 ---
 
-## 4. Recent Activity & Session Status (2026-10-20 Evening)
-- **Profile & Semantics Upgrades:**
-  - Undergrad GPA set to `6.5 CGPA` across `AGENTS.md`, `.env`, and all runners.
-  - Annual Income explicitly guarded across all modules to `1800000` (or `18` LPA) with zero numeric fallback to `4`.
-  - Designation uniformly set to `Business and Technology Consultant`.
-  - Built universal [`core/qa_semantics_engine.py`](file:///Users/ashish/git/ai-job-search/core/qa_semantics_engine.py) with deterministic regex matching for 100+ questions, negative tech exclusions (Java, Spring Boot, Kubernetes -> 0), positive tool experience (Python, SQL, Airflow, PySpark, Tableau -> 4), compliance, compensation, and OpenRouter Free Tier LLM fallback.
-  - Enriched [`user_inputs/application_qa_knowledge_base.json`](file:///Users/ashish/git/ai-job-search/user_inputs/application_qa_knowledge_base.json) from 25 to 49 comprehensive categories.
-  - Integrated `QASemanticsEngine` into both [`tools/linkedin_easy_apply_runner.py`](file:///Users/ashish/git/ai-job-search/tools/linkedin_easy_apply_runner.py) and [`automation/browser.py`](file:///Users/ashish/git/ai-job-search/automation/browser.py).
-  - Full automated quality verification gate passed 100% (427 passed, 1 skipped, 197 subtests, 0 PII leaks).
-- **OpenRouter Quota & Request Optimization (Radical Reduction):**
-  - **Tier 1 (Local Deterministic Rules & Knowledge Base):** Form fields, notice periods, tools, compensation, and 49 QA categories resolve locally in <1ms without touching network.
-  - **Tier 2 (Local SQLite Persistent Disk Cache):** Implemented permanent disk cache in [`intelligence/llm_clients/openrouter.py`](file:///Users/ashish/git/ai-job-search/intelligence/llm_clients/openrouter.py) at `~/.cache/careerpilot/llm_responses_cache.sqlite`. Repeated questions return in 0ms with **0 network requests and 0 tokens consumed**.
-  - **Tier 3 (OpenRouter Gateway Edge Caching):** Added `"X-OpenRouter-Cache": "true"` to all request headers. Upstream cache hits return in ~50ms, cost 0 credits, and **do not consume rate limits**.
-- **Recent Applications (Direct ATS):**
-  - **Kuehne+Nagel:** Applied to *Integrated Logistics Senior Data Quality Engineer* (Req `KUNAGLOBAL18106EXTERNALENGLOBAL`, Gurgaon).
-  - Generated tailored cover letter via OpenRouter free model ([cover_KuehneNagel_SeniorDataQualityEngineer.md](file:///Users/ashish/git/ai-job-search/cover_letters/cover_KuehneNagel_SeniorDataQualityEngineer.md) and DOCX).
-  - Ran `tools/ats_runner.py` in persistent headed mode. Form pre-filled (Personal info, address, experience, education, CV uploaded, consent checkboxes ticked).
-  - Headed browser held permanently open for final human verification and submission.
-  - Synchronized record into `job_search_tracker.csv` and `jobs.db` (Total: 137 applications).
-  - Generated pre-submission audit in [pre_submit_audit.md](file:///Users/ashish/git/ai-job-search/documents/applications/KuehneNagel_SeniorDataQualityEngineer/pre_submit_audit.md).
+## 4. Instructions for Resuming
 
----
-
-## 5. Instructions for Resuming
-1. Allow LinkedIn account cooldown period before launching fresh batches.
-2. Consider spacing queries across distinct target titles or utilizing search pagination (`start=75`, `start=100`).
-3. Maintain zero-cost OpenRouter free tier integration for all future screening questions.
+1. Live headed browser remains active on port 9222 on the AlphaSense Business Analyst II application review page with 0 errors.
+2. Candidate can review final fields and click **Submit application** on screen whenever ready.
+3. Next application can be initiated cleanly via `python tools/ats_runner.py --url "<URL>" --mode apply`.

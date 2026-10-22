@@ -81,6 +81,19 @@ class TestQASemanticsEngine(unittest.TestCase):
     def test_designation_override(self):
         self.assertEqual(QASemanticsEngine.match_question("Your job title / designation", field_type="text"), "Business and Technology Consultant")
 
+    def test_experience_and_duration_integer_only(self):
+        # 1. Verification that learned/KB questions return integer only, never '0 years' or '0 days'
+        self.assertEqual(QASemanticsEngine.match_question("how many years of work experience do you have with erwin?", field_type="text"), "0")
+        self.assertEqual(QASemanticsEngine.match_question("in how many days can you join us?", field_type="text"), "0")
+        self.assertEqual(QASemanticsEngine.match_question("how many years of work experience do you have working on azure cloud", field_type="text"), "0")
+        self.assertEqual(QASemanticsEngine.match_question("how many years of work experience do you have with pyton-scripting,", field_type="text"), "4")
+
+        # 2. Direct unit sanitizer test
+        self.assertEqual(QASemanticsEngine.sanitize_experience_or_duration("0 years", "experience with erwin"), "0")
+        self.assertEqual(QASemanticsEngine.sanitize_experience_or_duration("0 days", "in how many days can you join"), "0")
+        self.assertEqual(QASemanticsEngine.sanitize_experience_or_duration("4.8 years", "python experience"), "4")
+        self.assertEqual(QASemanticsEngine.sanitize_experience_or_duration("4 years", "total experience"), "4")
+
 
 if __name__ == "__main__":
     unittest.main()
