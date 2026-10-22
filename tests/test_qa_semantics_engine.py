@@ -113,6 +113,17 @@ class TestQASemanticsEngine(unittest.TestCase):
         self.assertEqual(QASemanticsEngine.match_question("What best describes your gender?", field_type="select", options=gender_opts), "Male")
         self.assertEqual(QASemanticsEngine.match_question("Gender", field_type="radio", options=gender_opts), "Male")
 
+    def test_demographic_diversity_questions(self):
+        # LGBTQ
+        self.assertEqual(QASemanticsEngine.match_question("Do you identify as LGBTQ?", field_type="radio", options=["Yes", "No"]), "No")
+        self.assertEqual(QASemanticsEngine.match_question("Sexual orientation", field_type="select", options=["Heterosexual / Straight", "Gay / Lesbian", "Bisexual", "Other"]), "Heterosexual / Straight")
+
+        # Veteran
+        self.assertEqual(QASemanticsEngine.match_question("Are you a protected veteran?", field_type="radio", options=["I am not a veteran", "I identify as one or more"]), "I am not a veteran")
+
+        # Disability
+        self.assertEqual(QASemanticsEngine.match_question("Do you have a disability?", field_type="radio", options=["Yes, I have a disability", "No, I do not have a disability"]), "No, I do not have a disability")
+
 
 if __name__ == "__main__":
     unittest.main()

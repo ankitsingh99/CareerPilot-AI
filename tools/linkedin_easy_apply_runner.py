@@ -522,9 +522,15 @@ def answer_modal_questions(page: Page):
                 if lbl_el:
                     radio_labels.append(lbl_el.inner_text().strip())
 
-            # Rule: Gender is strictly Male
-            if any(k in leg_text for k in ["gender", "sex", "what is your gender", "biological sex", "gender identity"]):
+            # Direct Demographic Rules
+            if (any(k in leg_text for k in ["gender", "what is your gender", "biological sex", "gender identity"]) or re.search(r"\bsex\b", leg_text)) and "orientation" not in leg_text:
                 ans = "Male"
+            elif any(k in leg_text for k in ["lgbtq", "identify as lgbtq", "sexual orientation"]):
+                ans = "No"
+            elif any(k in leg_text for k in ["veteran", "military status", "protected veteran"]):
+                ans = "No"
+            elif any(k in leg_text for k in ["disability", "disabled"]):
+                ans = "No"
             else:
                 ans = QASemanticsEngine.match_question(leg_text or "Screening question", field_type="radio", options=radio_labels)
                 if not ans or ans == "N/A":
@@ -1135,7 +1141,13 @@ def run(
     try:
         browser = pw.chromium.connect_over_cdp("http://localhost:9222", timeout=1500)
         ctx = browser.contexts[0] if browser.contexts else browser.new_context(no_viewport=True)
-        page = ctx.new_page()
+        # Prioritize active tab that is on linkedin.com/jobs
+        job_pages = [p for p in ctx.pages if "linkedin.com/jobs" in p.url]
+        if job_pages:
+            page = job_pages[0]
+            print(f"[LinkedIn Setup] Reusing active LinkedIn page: {page.url[:80]}...")
+        else:
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
         print("[LinkedIn Setup] Attached to existing browser session on CDP port 9222.")
     except Exception:
         browser = pw.chromium.launch_persistent_context(
@@ -1196,14 +1208,24 @@ def run(
                 f"{tpr_param}"
             )
 
-            print(f"\n[Search URL] {search_url}")
-            try:
-                page.goto(search_url, wait_until="domcontentloaded")
-                time.sleep(3.5)
-            except Exception as ge:
-                print(f"[Navigation Note] {ge}")
-
+            current_url = page.url
             page_num = 1
+            if "linkedin.com/jobs/search" in current_url and ("keywords=" in current_url or "f_AL=" in current_url):
+                parsed_u = urllib.parse.urlparse(current_url)
+                params = urllib.parse.parse_qs(parsed_u.query)
+                start_val = int(params.get("start", ["0"])[0])
+                if start_val > 0:
+                    page_num = (start_val // 25) + 1
+                    print(f"[Resume Detection] Continuing directly from active search page at start={start_val} (Page {page_num})")
+                else:
+                    print(f"[Resume Detection] Continuing directly from active LinkedIn jobs search page.")
+            else:
+                print(f"\n[Search URL] {search_url}")
+                try:
+                    page.goto(search_url, wait_until="domcontentloaded")
+                    time.sleep(3.5)
+                except Exception as ge:
+                    print(f"[Navigation Note] {ge}")
 
             while applied < target and page_num <= 10:
                 if (today_applied + applied) >= DAILY_EASY_APPLY_LIMIT:

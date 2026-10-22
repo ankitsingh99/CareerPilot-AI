@@ -42,18 +42,19 @@
 
 ### 4. LinkedIn Easy Apply Automation & Daily Safety Ceiling
 - **Search Parameters:** Data Analyst positions in India posted in the last 24 hours (`f_TPR=r86400`, Date Descending).
-- **Execution & Submissions:** 12 Easy Apply applications completed and recorded in this cycle, reaching today's total of 41 Easy Apply applications.
-- **Rate Limit Safety:** Enforced daily safety ceiling (35-40 applications / 24h) to safeguard candidate account reputation. Easy Apply automation safely paused until the rolling 24h reset.
+- **Execution & Submissions:** 16 Easy Apply applications submitted across today's sessions, totaling 41 unique Easy Apply applications on 2026-10-22 (including latest roles: IndiTech Consulting, crewlia, IQVIA India, Kake).
+- **Rate Limit Safety:** Enforced daily safety ceiling (35-40 applications / 24h) to safeguard candidate account reputation. Automation safely paused upon reaching 41 submissions.
 - **Tracker Synchronization:** 100% of submitted jobs synced to `user_inputs/job_search_tracker.csv` and SQLite `jobs.db`.
 
-### 5. Strict Gender Match & Semantics Engine Hardening
+### 5. Strict Gender Match & Demographic Screening Hardening
 - **Strict Male Gender Directive:** Enforced exact string equality, negative assertions against `"female"`, and strict word-boundary regex (`\bmale\b`) across `core/qa_semantics_engine.py` and `tools/linkedin_easy_apply_runner.py` to eradicate substring collisions (where `"female"` previously matched substring `"male"`).
-- **Comprehensive Unit Testing:** Added `test_gender_strictly_male` in `tests/test_qa_semantics_engine.py`, ensuring `Male` is accurately matched across radio options and dropdowns.
+- **Demographic Diversity Rules:** Codified deterministic handlers for LGBTQ (`No` / `Heterosexual`), Veteran status (`No` / `I am not a veteran`), Disability (`No, I do not have a disability`), and Race (`Asian - Indian`), preventing sexual orientation from colliding with "sex" questions.
+- **Comprehensive Unit Testing:** Added `test_gender_strictly_male` and `test_demographic_diversity_questions` in `tests/test_qa_semantics_engine.py`.
 - **Codified Invariant:** Codified in `.agents/rules/05_APPLICATION_LEARNING_AND_ADAPTATION.md` and `user_inputs/candidate_preferences_and_rules.md`.
 
 ### 6. Modern LinkedIn Navigation & CDP Session Resiliency
 - **Auth & Nav Detection:** Updated `is_logged_in` in `tools/linkedin_easy_apply_runner.py` to recognize modern obfuscated nav selectors (`a[href*='/messaging']`, `a[href*='/notifications']`, `a[href*='/mynetwork']`), eliminating false-positive login walls.
-- **CDP Port 9222 Attach:** Added automatic fallback to connect via `connect_over_cdp("http://localhost:9222")`, allowing scripts to seamlessly share the existing interactive browser session without profile lock conflicts.
+- **CDP Port 9222 Attach & Tab Reuse:** Automatically attaches to `http://localhost:9222`, reuses the open tab with `linkedin.com/jobs`, and seamlessly continues from the current pagination offset (`start=25`, Page 2+) without reloading from Page 1.
 - **Zero-Cost OpenRouter Free Tier:** Utilized zero-cost free models (`google/gemma-4-31b-it:free`, `cohere/north-mini-code:free`) with zero financial spend.
 
 ---

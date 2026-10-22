@@ -400,8 +400,21 @@ class QASemanticsEngine:
                     if "english" in opt.lower():
                         return opt.strip()
 
+            # LGBTQ / Sexual Orientation options
+            if any(k in lbl for k in ["lgbtq", "sexual orientation", "identify as lgbtq", "orientation"]):
+                for opt in options:
+                    if opt.strip().lower() in ["no", "heterosexual", "straight", "prefer not to say", "prefer not to disclose"]:
+                        return opt.strip()
+                for opt in options:
+                    if any(term in opt.lower() for term in ["heterosexual", "straight"]):
+                        return opt.strip()
+                for opt in options:
+                    if "no" in opt.lower() and "yes" not in opt.lower():
+                        return opt.strip()
+                return "No"
+
             # Gender options
-            if any(k in lbl for k in ["gender", "sex"]):
+            if (re.search(r"\b(gender|sex|biological sex)\b", lbl) or "gender identity" in lbl) and "orientation" not in lbl:
                 for opt in options:
                     if opt.strip().lower() == "male":
                         return opt.strip()
@@ -409,6 +422,26 @@ class QASemanticsEngine:
                     if re.search(r"\bmale\b", opt.strip(), re.IGNORECASE) and "female" not in opt.lower():
                         return opt.strip()
                 return "Male"
+
+            # Veteran status
+            if any(k in lbl for k in ["veteran", "military"]):
+                for opt in options:
+                    if any(term in opt.lower() for term in ["not a veteran", "no", "not a protected", "neither", "i am not"]):
+                        return opt.strip()
+                return "No"
+
+            # Disability status
+            if any(k in lbl for k in ["disability", "handicap", "physical or mental impairment"]):
+                for opt in options:
+                    if any(term in opt.lower() for term in ["do not have a disability", "no disability", "no, i don't", "no, i do not", "no", "not have a"]):
+                        return opt.strip()
+                return "No"
+
+            # Race / Ethnicity
+            if any(k in lbl for k in ["race", "ethnicity", "ethnic origin"]):
+                for opt in options:
+                    if any(term in opt.lower() for term in ["asian - indian", "asian indian", "asian", "south asian", "indian"]):
+                        return opt.strip()
 
             # Location / Country options
             if any(k in lbl for k in ["country", "location", "citizenship", "nationality"]):
@@ -490,7 +523,7 @@ class QASemanticsEngine:
             return cand["pincode"]
         if any(k in lbl for k in ["street address", "address line 1", "residential address", "home address"]):
             return cand["address"]
-        if any(k in lbl for k in ["gender", "sex", "what is your gender", "biological sex", "gender identity"]):
+        if (any(k in lbl for k in ["gender", "what is your gender", "biological sex", "gender identity"]) or re.search(r"\bsex\b", lbl)) and "sexual" not in lbl and "orientation" not in lbl:
             return "Male"
 
         # ── 5.5 PROFESSIONAL REFERENCES (STRICT ZERO-FABRICATION RULE) ───────────
@@ -537,13 +570,14 @@ class QASemanticsEngine:
                 return "No"
             return ""
 
-        # Negative compliance questions (Always 'No')
+        # Negative compliance & demographic questions (Always 'No')
         if any(k in lbl for k in [
             "visa sponsorship", "require sponsorship", "need sponsorship", "require visa",
             "future sponsorship", "employee referral", "referred by", "personal relationship",
             "current employee", "know anyone", "family member", "relative",
             "felony", "criminal", "convicted", "crime", "misdemeanor",
-            "non-compete", "non compete", "non-solicitation", "restrictive agreement"
+            "non-compete", "non compete", "non-solicitation", "restrictive agreement",
+            "lgbtq", "identify as lgbtq", "sexual orientation", "veteran", "military", "disability", "disabled"
         ]):
             return "No"
 
