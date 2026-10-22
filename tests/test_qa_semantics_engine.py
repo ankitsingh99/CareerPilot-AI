@@ -9,6 +9,7 @@ Uses standard library unittest.TestCase for full compatibility with GitHub CI un
 """
 
 import unittest
+from unittest.mock import patch
 from core.qa_semantics_engine import QASemanticsEngine
 
 
@@ -83,10 +84,17 @@ class TestQASemanticsEngine(unittest.TestCase):
 
     def test_experience_and_duration_integer_only(self):
         # 1. Verification that learned/KB questions return integer only, never '0 years' or '0 days'
-        self.assertEqual(QASemanticsEngine.match_question("how many years of work experience do you have with erwin?", field_type="text"), "0")
-        self.assertEqual(QASemanticsEngine.match_question("in how many days can you join us?", field_type="text"), "0")
-        self.assertEqual(QASemanticsEngine.match_question("how many years of work experience do you have working on azure cloud", field_type="text"), "0")
-        self.assertEqual(QASemanticsEngine.match_question("how many years of work experience do you have with pyton-scripting,", field_type="text"), "4")
+        fake_kb = {
+            "how many years of work experience do you have with erwin?": "0 years",
+            "in how many days can you join us?": "0 days",
+            "how many years of work experience do you have working on azure cloud": "0 years",
+            "how many years of work experience do you have with pyton-scripting,": "4 years",
+        }
+        with patch.object(QASemanticsEngine, "lookup_knowledge_base", side_effect=lambda q, **kwargs: fake_kb.get(q.strip().lower())):
+            self.assertEqual(QASemanticsEngine.match_question("how many years of work experience do you have with erwin?", field_type="text"), "0")
+            self.assertEqual(QASemanticsEngine.match_question("in how many days can you join us?", field_type="text"), "0")
+            self.assertEqual(QASemanticsEngine.match_question("how many years of work experience do you have working on azure cloud", field_type="text"), "0")
+            self.assertEqual(QASemanticsEngine.match_question("how many years of work experience do you have with pyton-scripting,", field_type="text"), "4")
 
         # 2. Direct unit sanitizer test
         self.assertEqual(QASemanticsEngine.sanitize_experience_or_duration("0 years", "experience with erwin"), "0")

@@ -1,5 +1,5 @@
 # AI Job Search: Session Handoff Document
-**Last Updated:** 2026-10-22 11:35:00 IST  
+**Last Updated:** 2026-10-22 11:47:00 IST  
 **Active Git Branch / Commit:** `master` @ `origin/master` (Universal Automation Framework v1.2.0)  
 **Repository Visibility:** Public ([https://github.com/ankitsingh99/ai-job-search](https://github.com/ankitsingh99/ai-job-search))  
 **Model Context Status:** Optimal (Clean Context Handoff)  
@@ -40,8 +40,10 @@
   4. *Mandatory Date Population:* Enforce start and end dates for all roles and degrees (including UI5 shadow DOM web components).
   5. *Rush by Kira Domain Spec:* Strictly classified as `Retail` / `D2C Retail & E-Commerce Operations`.
 
-### 4. Zero-Cost OpenRouter Free Tier Catalog
+### 4. Zero-Cost OpenRouter Free Tier Catalog & CI Hardening
 - Synced 18 active free models (`cohere/north-mini-code:free`, `google/gemma-4-31b-it:free`, `minimax/minimax-m3.1-flash:free`, `nvidia/nemotron-3.5-lightning:free`) in `openrouter_free_models.txt`.
+- Hardened OpenRouter client (`intelligence/llm_clients/openrouter.py`) to raise `RuntimeError` immediately if `OPENROUTER_API_KEY` is unconfigured, preventing repeated 401 Unauthorized loops in CI environments.
+- Hardened QA Semantics test suite (`tests/test_qa_semantics_engine.py`) to mock knowledge base responses for learned Q&A duration sanitization checks, ensuring 100% CI reproducibility independent of local gitignored knowledge bases.
 - Guaranteed $0.00 spend across all operations.
 
 ---

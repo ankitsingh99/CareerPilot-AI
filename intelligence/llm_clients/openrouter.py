@@ -309,6 +309,9 @@ def ask(
         raise ValueError(f"Strict Zero-Cost Violation: Model '{model}' is not a free-tier endpoint (:free).")
 
     api_key = _load_key()
+    if not api_key:
+        raise RuntimeError("OpenRouter API key is not configured. Set OPENROUTER_API_KEY environment variable.")
+
     cleaned_prompt = trim_text_content(prompt) if trim_input else prompt
     cleaned_system = trim_text_content(system, max_chars=1500) if trim_input else system
 
