@@ -1,6 +1,6 @@
 # OpenRouter Zero-Cost Free Models Catalog
-# Generated: 2026-10-22 06:05:05 UTC
-# Total Active Free Models: 18
+# Generated: 2026-10-25 02:10:50 UTC
+# Total Active Free Models: 17
 # Update Frequency: Weekly (Scheduled via GitHub Actions & Antigravity Cron)
 # Zero-Cost Policy: $0.00 / prompt token, $0.00 / completion token (100% Free)
 
@@ -13,7 +13,6 @@ dots-studio/dots-3-note-preview:free           |   512,000 | Dots Studio: Dots3-
 google/gemma-4-26b-a4b-it:free                 |   262,144 | Google: Gemma 4 26B A4B  (free)
 google/gemma-4-31b-it:free                     |   262,144 | Google: Gemma 4 31B (free)
 liquid/lfm-2.5-2.6b:free                       |    65,536 | LiquidAI: LFM2.5-2.6B (free)
-minimax/minimax-m3.1-flash:free                | 1,000,000 | MiniMax: MiniMax M3.1 Flash (free)
 nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free |   256,000 | NVIDIA: Nemotron 3 Nano Omni (free)
 nvidia/nemotron-3-super-120b-a12b:free         |   262,144 | NVIDIA: Nemotron 3 Super (free)
 nvidia/nemotron-3-ultra-550b-a55b:free         | 1,000,000 | NVIDIA: Nemotron 3 Ultra (free)
@@ -36,7 +35,6 @@ dots-studio/dots-3-note-preview:free
 google/gemma-4-26b-a4b-it:free
 google/gemma-4-31b-it:free
 liquid/lfm-2.5-2.6b:free
-minimax/minimax-m3.1-flash:free
 nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
 nvidia/nemotron-3-super-120b-a12b:free
 nvidia/nemotron-3-ultra-550b-a55b:free
