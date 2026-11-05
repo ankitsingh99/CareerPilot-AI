@@ -1,0 +1,19 @@
+Subject: Referral request – Business Analyst (Product & Consumer Analytics) at PhonePe
+
+Hi [Employee First Name],
+
+I hope you’re doing well. I’m very interested in PhonePe’s Business Analyst role (Product & Consumer Analytics) and believe my background aligns closely with the team’s needs.
+
+- 4+ years of data analytics/engineering experience, specializing in NPP and AdTech platforms (DSPs, ad‑trading, Meta/Google Ads pixel integrations).
+- Delivered a 15% lift in conversion and cut data‑pipeline errors by 40% through automated ingestion and performance‑tuned SQL models in Snowflake and BigQuery.
+- Built end‑to‑end analytics pipelines (Python, dbt, Airflow) that surfaced actionable product insights for cross‑functional stakeholders.
+
+I’ve attached my CV for your reference. If you feel my skill set is a good fit, could you please refer me through the internal portal? I’d be happy to discuss any details.
+
+Thanks for your time!
+
+Best,
+Ankit Kumar Singh
+Phone: +91 *******
+LinkedIn: https://linkedin.com/in/ankit-singh99
+GitHub: https://github.com/ankitsingh99
