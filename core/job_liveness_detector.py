@@ -10,8 +10,11 @@ Python 3.15+ native architecture. Zero em dashes, zero external network calls.
 """
 
 import re
+import urllib.request
+import urllib.error
 import unicodedata
 from typing import Tuple, Optional
+from utils.ssrf_guard import validate_url
 
 
 def normalize_for_match(text: str) -> str:
@@ -118,6 +121,61 @@ def check_page_liveness(page) -> Tuple[bool, str]:
         pass
 
     return True, "Active"
+
+
+def check_url_liveness(url: str, timeout: int = 8) -> Tuple[bool, str, int]:
+    """
+    Zero-token lightweight HTTP check to verify if a job URL is live before launching
+    heavy browser automation or AI evaluation. Validates against SSRF, redirects,
+    and HTML closure indicators.
+    Returns (is_live: bool, reason: str, http_code: int).
+    """
+    if not url:
+        return False, "Empty URL provided", 0
+
+    valid, reason = validate_url(url)
+    if not valid:
+        return False, f"SSRF Guard blocked URL: {reason}", 0
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            code = resp.status
+            final_url = resp.geturl()
+
+            # Detect generic search/career home redirect
+            parsed_final = urllib.parse.urlparse(final_url)
+            if any(path_term in parsed_final.path.lower() for path_term in ["/careers/search", "/jobs/search", "/search-jobs", "/404"]):
+                return False, f"Redirected to generic search page: {final_url}", code
+
+            # Read beginning of HTML body (up to 8KB)
+            content_sample = resp.read(8192).decode("utf-8", errors="ignore")
+            expired, reason_match = is_job_expired(content_sample)
+            if expired:
+                return False, f"Closure banner in HTML: {reason_match}", code
+
+            return True, "Active (HTTP 200 OK)", code
+
+    except urllib.error.HTTPError as he:
+        if he.code in (404, 410):
+            return False, f"HTTP Error {he.code} (Job removed or expired)", he.code
+        if he.code in (401, 403):
+            # Auth-gated or cloudflare-protected: inconclusive HTTP, needs browser check
+            return True, f"HTTP {he.code} (Auth-gated / Anti-bot protected, requires browser context)", he.code
+        return False, f"HTTP Error {he.code}", he.code
+    except urllib.error.URLError as ue:
+        return False, f"Network connection failed: {ue.reason}", 0
+    except Exception as e:
+        return True, f"Inconclusive ({type(e).__name__}), proceed to browser verification", 0
 
 
 if __name__ == "__main__":

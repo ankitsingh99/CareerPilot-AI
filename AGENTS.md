@@ -67,7 +67,7 @@ All fields below are loaded from `.env` or structured user inputs. When generati
 `[NOT_SET: CANDIDATE_EXPERIENCE_ENTRIES]`
 
 ### 1.5 Technical Skills Template
-- **Primary Languages & Query Engines:** `Python, PySpark, SQL (Snowflake, PostgreSQL (4 yr exp), Trino, Oracle), Apache Airflow, ETL/ELT Architectures (4 yr exp), AI Agents & Webhooks, SQL Performance Tuning, Data Modeling/Warehouse (4 yr exp)`
+- **Primary Languages & Query Engines:** `Python, PySpark, SQL (Snowflake, PostgreSQL (5 yr exp), Trino, Oracle), Apache Airflow, ETL/ELT Architectures (4 yr exp), AI Agents & Webhooks, SQL Performance Tuning, Data Modeling/Warehouse (5 yr exp), Databases (5 yr exp)`
 - **ETL / Frameworks & Tools:** `Tableau, AWS (S3, SNS), Git, Bitbucket, SonarQube, Apache Airflow, Unix/Linux, Microsoft Excel, PowerPoint, Meta Ads & Pixel, Jupyter Notebooks`
 - **Secondary / Data Science & ML:** `Machine Learning (Scikit-learn, Feature Engineering, Anomaly Modeling, Cohort Analytics, Time-Series Forecasting), AWS (SNS, S3), Autosys, REST APIs, Unix, SonarQube, Bitbucket`
 - **Domain Specializations:** `Data Governance & Engineering, Healthcare Commercial Analytics (HIPAA, PII, HCP/HCO, Claims, Field Force & Sales Analytics), AI Agent Automation, E-commerce/D2C Analytics, Financial Valuation`

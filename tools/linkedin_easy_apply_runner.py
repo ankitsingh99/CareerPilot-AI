@@ -308,7 +308,18 @@ def ask_openrouter_free(question: str, options: Optional[List[str]] = None, fiel
         raw = response.strip()
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
-        ans = lines[-1].strip('"').strip("'").strip() if lines else raw.strip('"').strip("'").strip()
+        clean_lines = []
+        for ln in lines:
+            cl = re.sub(r"^[\*\-•\d\.\s]+", "", ln).strip()
+            cl = re.sub(r"^\*\*.*?\*\*:?\s*", "", cl).strip()
+            if cl and not any(cl.lower().startswith(p) for p in [
+                "we need", "so for", "field question", "the instruction", "constraint",
+                "candidate", "i would", "here is", "likely", "probably", "note:", "output:"
+            ]):
+                clean_lines.append(cl)
+        ans = clean_lines[-1].strip('"').strip("'").strip() if clean_lines else (lines[-1].strip('"').strip("'").strip() if lines else raw.strip('"').strip("'").strip())
+        if field_type != "textarea" and (len(ans) > 70 or any(w in ans.lower() for w in ["we need", "candidate", "instruction", "constraint", "field label", "preferred name", "likely"])):
+            ans = ""
         if ans and field_type not in ("select", "radio"):
             # Enforce integer-only for duration / experience questions
             unit_match = re.match(r"^\s*(\d+(?:\.\d+)?)\s*(?:years?|yrs?|months?|mos?|days?)\s*$", ans, re.IGNORECASE)
@@ -674,7 +685,7 @@ def clear_all_overlays(page: Page):
         pass
 
 
-def apply_to_current_job(page: Page) -> bool:
+def apply_to_current_job(page: Page, review_only: bool = False) -> bool:
     """Complete the Easy Apply modal for whatever job is currently open."""
     # ── Job Liveness Pre-Flight Check (Zero-Token Expired Posting Guard) ────
     try:
@@ -722,17 +733,70 @@ def apply_to_current_job(page: Page) -> bool:
         time.sleep(1.5)
         print(f"  [*] Modal step {step + 1}…")
 
-        # ── Resume upload ─────────────────────────────────────────────────
-        file_input = page.query_selector(".jobs-easy-apply-modal input[type='file']")
-        if file_input and RESUME_PATH and RESUME_PATH.exists():
-            already = page.query_selector(".jobs-easy-apply-modal .jobs-document-upload__file-name")
-            if not already:
-                try:
-                    file_input.set_input_files(str(RESUME_PATH))
-                    print(f"  [+] Uploaded Master CV: {RESUME_PATH.name}")
-                    time.sleep(2)
-                except Exception as e:
-                    print(f"  [!] Upload note: {e}")
+        # ── Resume verification and upload (Token-Lean & Duplicate Prevention) ──
+        if RESUME_PATH and RESUME_PATH.exists():
+            cv_target_name = RESUME_PATH.name.lower()
+            cv_stem = RESUME_PATH.stem.lower()
+
+            # Cross-verify if CV matching our latest tool CV is already present / selected
+            cv_already_selected = page.evaluate("""([targetName, targetStem]) => {
+                const modal = document.querySelector('.jobs-easy-apply-modal');
+                if (!modal) return false;
+
+                // 1. Check existing file name elements
+                const nameEls = Array.from(modal.querySelectorAll(
+                    '.jobs-document-upload__file-name, .jobs-resume-picker__resume-name, .jobs-resume-picker__file-name, [data-test-resume-file-name]'
+                ));
+                for (const el of nameEls) {
+                    const txt = (el.innerText || '').toLowerCase();
+                    if (txt.includes(targetName) || (targetStem && txt.includes(targetStem))) {
+                        const container = el.closest('[role="radio"], .jobs-resume-picker__resume, label, li');
+                        const isChecked = container && (
+                            container.getAttribute('aria-checked') === 'true' ||
+                            container.querySelector('input[type="radio"]:checked') !== null ||
+                            container.classList.contains('jobs-resume-picker__resume--selected')
+                        );
+                        if (isChecked || !modal.querySelector('input[type="radio"]')) {
+                            return true;
+                        }
+                    }
+                }
+
+                // 2. Check selectable resume radio options / cards
+                const radioEls = Array.from(modal.querySelectorAll('input[type="radio"]'));
+                for (const r of radioEls) {
+                    const lbl = r.closest('label')?.innerText || r.closest('.fb-dash-form-element, li')?.innerText || '';
+                    const lblLow = lbl.toLowerCase();
+                    if (lblLow.includes(targetName) || (targetStem && lblLow.includes(targetStem))) {
+                        if (r.checked || r.getAttribute('aria-checked') === 'true') {
+                            return true;
+                        }
+                        const clickTarget = r.closest('label') || r;
+                        clickTarget.click();
+                        return true;
+                    }
+                }
+
+                // 3. Fallback: if displayed resume card text in modal contains target CV name
+                const resumeSection = modal.querySelector('.jobs-document-upload, .jobs-resume-picker, .fb-dash-form-element');
+                if (resumeSection && resumeSection.innerText.toLowerCase().includes(targetName)) {
+                    return true;
+                }
+
+                return false;
+            }""", [cv_target_name, cv_stem])
+
+            if cv_already_selected:
+                print(f"  [CV Check] Latest CV '{RESUME_PATH.name}' is already attached and selected. Skipping re-upload.")
+            else:
+                file_input = page.query_selector(".jobs-easy-apply-modal input[type='file']")
+                if file_input:
+                    try:
+                        file_input.set_input_files(str(RESUME_PATH))
+                        print(f"  [+] Uploaded Master CV: {RESUME_PATH.name}")
+                        time.sleep(2)
+                    except Exception as e:
+                        print(f"  [!] Upload note: {e}")
 
         # ---- Upload Cover Letter if field exists ----
         cover_letter_path = Path(ROOT_DIR) / "user_inputs" / "cover_letter.txt"
@@ -811,6 +875,11 @@ def apply_to_current_job(page: Page) -> bool:
         }""")
 
         if action == "submit":
+            if review_only:
+                print("  [Review Mode] Reached final review step. Form populated for human review.")
+                print("  [Review Mode] Submit button NOT clicked per --review-only instruction.")
+                alert("Review Ready", "Application populated and paused at review screen.")
+                return True
             print("  [✓] Submitting application…")
             page.evaluate("""() => {
                 const modal = document.querySelector('.jobs-easy-apply-modal');
@@ -862,6 +931,11 @@ def apply_to_current_job(page: Page) -> bool:
             }""")
             review_clicked = True
             time.sleep(2)
+            if review_only:
+                print("  [Review Mode] Reached final review step. Form populated for human review.")
+                print("  [Review Mode] Submit button NOT clicked per --review-only instruction.")
+                alert("Review Ready", "Application populated and paused at review screen.")
+                return True
             # Check if submit is now available after review transition/scroll
             submit_after_review = page.evaluate("""() => {
                 const modal = document.querySelector('.jobs-easy-apply-modal');
@@ -1061,7 +1135,10 @@ def run(
     locations: Optional[List[str]] = None,
     sort: str = "DD",
     time_filter: Optional[str] = "r86400",
-    keep_open: bool = True
+    keep_open: bool = True,
+    override_daily_limit: bool = False,
+    review_only: bool = False,
+    no_remote: bool = False
 ):
     global RESUME_PATH
     load_env()
@@ -1125,11 +1202,13 @@ def run(
     print(f"  • Recency Filter: {tpr_param or 'None (All time)'}")
     print(f"  • Target Applications: {target}")
     print(f"  • LLM Engine: OpenRouter Free Tier (:free)")
-    print(f"  • Today's Easy Apply Submissions: {today_applied}/{DAILY_EASY_APPLY_LIMIT}\n")
+    active_limit = "Unlimited (User Override)" if override_daily_limit else f"{DAILY_EASY_APPLY_LIMIT}"
+    print(f"  • Today's Easy Apply Submissions: {today_applied}/{active_limit}\n")
 
-    if today_applied >= DAILY_EASY_APPLY_LIMIT:
+    if not override_daily_limit and today_applied >= DAILY_EASY_APPLY_LIMIT:
         print(f"\n[Safety Gate] Daily Easy Apply ceiling reached ({today_applied}/{DAILY_EASY_APPLY_LIMIT} submitted today).")
-        print("Halting automation to protect account standing against LinkedIn limits.\n")
+        print("Halting automation to protect account standing against LinkedIn limits.")
+        print("To bypass this ceiling upon explicit user instruction, pass --override-daily-limit.\n")
         alert("Easy Apply Daily Limit", f"Reached {today_applied}/{DAILY_EASY_APPLY_LIMIT} applications today. Automation safely paused.")
         return
 
@@ -1139,7 +1218,7 @@ def run(
 
     browser = None
     try:
-        browser = pw.chromium.connect_over_cdp("http://localhost:9222", timeout=1500)
+        browser = pw.chromium.connect_over_cdp("http://localhost:9222", timeout=5000)
         ctx = browser.contexts[0] if browser.contexts else browser.new_context(no_viewport=True)
         # Prioritize active tab that is on linkedin.com/jobs
         job_pages = [p for p in ctx.pages if "linkedin.com/jobs" in p.url]
@@ -1149,7 +1228,8 @@ def run(
         else:
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
         print("[LinkedIn Setup] Attached to existing browser session on CDP port 9222.")
-    except Exception:
+    except Exception as cdp_err:
+        print(f"[LinkedIn Setup] CDP connect note: {cdp_err}. Launching persistent context...")
         browser = pw.chromium.launch_persistent_context(
             user_data_dir=str(session_dir),
             headless=False,
@@ -1183,7 +1263,7 @@ def run(
 
     # Step 3: Iterate through locations and designation clusters
     for loc in locations_to_scan:
-        if applied >= target or (today_applied + applied) >= DAILY_EASY_APPLY_LIMIT:
+        if (review_only and applied > 0) or applied >= target or (not override_daily_limit and (today_applied + applied) >= DAILY_EASY_APPLY_LIMIT):
             break
 
         print(f"\n{'#'*65}")
@@ -1191,19 +1271,21 @@ def run(
         print(f"{'#'*65}")
 
         for kw in queries_to_scan:
-            if applied >= target or (today_applied + applied) >= DAILY_EASY_APPLY_LIMIT:
+            if (review_only and applied > 0) or applied >= target or (not override_daily_limit and (today_applied + applied) >= DAILY_EASY_APPLY_LIMIT):
                 break
 
             canonical_loc, geo_id = resolve_linkedin_geo(loc)
             encoded_kw = urllib.parse.quote(kw)
             encoded_loc = urllib.parse.quote(canonical_loc)
             geo_param = f"&geoId={geo_id}" if geo_id else ""
+            wt_param = "&f_WT=1%2C3" if no_remote else ""
             search_url = (
                 f"https://www.linkedin.com/jobs/search/?"
                 f"keywords={encoded_kw}"
                 f"&location={encoded_loc}"
                 f"{geo_param}"
                 f"&f_AL=true"
+                f"{wt_param}"
                 f"&sortBy={sort}"
                 f"{tpr_param}"
             )
@@ -1228,7 +1310,7 @@ def run(
                     print(f"[Navigation Note] {ge}")
 
             while applied < target and page_num <= 10:
-                if (today_applied + applied) >= DAILY_EASY_APPLY_LIMIT:
+                if not override_daily_limit and (today_applied + applied) >= DAILY_EASY_APPLY_LIMIT:
                     print(f"\n[Safety Gate] Reached daily safety ceiling of {DAILY_EASY_APPLY_LIMIT} Easy Apply applications today.")
                     alert("Easy Apply Daily Limit", f"Completed {DAILY_EASY_APPLY_LIMIT} applications today. Pausing safely.")
                     applied = target
@@ -1282,7 +1364,7 @@ def run(
                 for jid in job_ids:
                     if applied >= target:
                         break
-                    if (today_applied + applied) >= DAILY_EASY_APPLY_LIMIT:
+                    if not override_daily_limit and (today_applied + applied) >= DAILY_EASY_APPLY_LIMIT:
                         print(f"\n[Safety Gate] Reached daily safety ceiling of {DAILY_EASY_APPLY_LIMIT} Easy Apply applications today.")
                         alert("Easy Apply Daily Limit", f"Completed {DAILY_EASY_APPLY_LIMIT} applications today. Pausing safely.")
                         applied = target
@@ -1329,6 +1411,13 @@ def run(
                             print(f"  [-] Skipped non‑India location: '{job_loc}'.")
                             continue
 
+                        # Strict no-remote guard
+                        if no_remote:
+                            combined_text = f"{title} {job_loc}".lower()
+                            if "remote" in combined_text or "work from home" in combined_text or "wfh" in combined_text:
+                                print(f"  [-] Skipped remote job per --no-remote preference: '{title}' ({job_loc}).")
+                                continue
+
                         print(f"\n→ [{applied+1}/{target}] {title} @ {company} ({job_loc or loc})")
 
                         # # Strict India‑only location guard (legacy, disabled)
@@ -1354,8 +1443,18 @@ def run(
                             print("  [-] Skipped due to exclusion rule (e.g. Java, DevOps, Internship).")
                             continue
 
-                        ok = apply_to_current_job(page)
+                        ok = apply_to_current_job(page, review_only=review_only)
                         if ok:
+                            if review_only:
+                                applied += 1
+                                print("\n" + "=" * 65)
+                                print(f"  [Review Mode] Application populated for review: {title} @ {company}")
+                                print("  [Review Mode] Form modal is left open on your display.")
+                                print("  [Review Mode] Submit button was NOT clicked per user instruction.")
+                                print("  [Review Mode] Please review the form and submit directly on screen.")
+                                print("=" * 65 + "\n")
+                                alert("Application Ready for Review", f"Review ready for {title} @ {company}")
+                                break
                             applied += 1
                             applied_urls.add(jid)
                             applied_urls.add(f"https://www.linkedin.com/jobs/view/{jid}/")
@@ -1392,6 +1491,9 @@ def run(
                             break
                         clear_all_overlays(page)
                         time.sleep(1)
+
+                if review_only and applied > 0:
+                    break
 
                 if hasattr(page, "is_closed") and page.is_closed():
                     print("  [!] Page was closed, stopping pagination.")
@@ -1439,23 +1541,40 @@ def run(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="LinkedIn Easy Apply Runner with OpenRouter Free")
     parser.add_argument("count", nargs="?", type=int, default=40, help="Number of applications (default: 40)")
-    parser.add_argument("--keywords", "-k", type=str, default="auto", help="Designations search query or semicolon-separated queries (default: auto)")
+    parser.add_argument("-n", "--num", "--count", dest="count_flag", type=int, default=None, help="Number of applications (alias for count)")
+    parser.add_argument("--keywords", "-k", nargs="*", default=["auto"], help="Designations search query or space/semicolon-separated queries (default: auto)")
     parser.add_argument("--location", "-l", type=str, default="Delhi NCR, India", help="Comma-separated location priority queue (India only, NCR prioritized)")
     parser.add_argument("--locations", type=str, default=None, help="Alias for comma-separated locations queue")
     parser.add_argument("--time-filter", "-t", type=str, default="r86400", help="Recency filter: r86400 / 24h (default: r86400)")
     parser.add_argument("--sort", "-s", type=str, default="DD", choices=["DD", "R"], help="DD = Date Descending (newest to old), R = Relevant")
     parser.add_argument("--no-keep-open", action="store_true", help="Do not keep browser loop active at end")
+    parser.add_argument("--override-daily-limit", action="store_true", help="Bypass the daily Easy Apply safety limit of 40")
+    parser.add_argument("--review-only", action="store_true", help="Populate the Easy Apply form and pause at review screen without clicking Submit")
+    parser.add_argument("--no-remote", action="store_true", help="Exclude remote jobs (filter to onsite & hybrid only)")
     args = parser.parse_args()
+
+    target_count = args.count_flag if args.count_flag is not None else args.count
+
+    if isinstance(args.keywords, list):
+        if len(args.keywords) == 1 and args.keywords[0] == "auto":
+            keywords_arg = "auto"
+        else:
+            keywords_arg = "; ".join(args.keywords)
+    else:
+        keywords_arg = args.keywords
 
     loc_str = args.locations or args.location
     locations_list = [loc.strip() for loc in loc_str.split(",") if loc.strip()]
 
     run(
-        target=args.count,
-        keywords=args.keywords,
+        target=target_count,
+        keywords=keywords_arg,
         locations=locations_list,
         sort=args.sort,
         time_filter=args.time_filter,
-        keep_open=not args.no_keep_open
+        keep_open=not args.no_keep_open,
+        override_daily_limit=args.override_daily_limit,
+        review_only=args.review_only,
+        no_remote=args.no_remote
     )
 

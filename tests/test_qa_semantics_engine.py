@@ -87,13 +87,13 @@ class TestQASemanticsEngine(unittest.TestCase):
         fake_kb = {
             "how many years of work experience do you have with erwin?": "0 years",
             "in how many days can you join us?": "0 days",
-            "how many years of work experience do you have working on azure cloud": "0 years",
+            "how many years of work experience do you have working on splunk": "0 years",
             "how many years of work experience do you have with pyton-scripting,": "4 years",
         }
         with patch.object(QASemanticsEngine, "lookup_knowledge_base", side_effect=lambda q, **kwargs: fake_kb.get(q.strip().lower())):
             self.assertEqual(QASemanticsEngine.match_question("how many years of work experience do you have with erwin?", field_type="text"), "0")
             self.assertEqual(QASemanticsEngine.match_question("in how many days can you join us?", field_type="text"), "0")
-            self.assertEqual(QASemanticsEngine.match_question("how many years of work experience do you have working on azure cloud", field_type="text"), "0")
+            self.assertEqual(QASemanticsEngine.match_question("how many years of work experience do you have working on splunk", field_type="text"), "0")
             self.assertEqual(QASemanticsEngine.match_question("how many years of work experience do you have with pyton-scripting,", field_type="text"), "4")
 
         # 2. Direct unit sanitizer test
@@ -123,6 +123,21 @@ class TestQASemanticsEngine(unittest.TestCase):
 
         # Disability
         self.assertEqual(QASemanticsEngine.match_question("Do you have a disability?", field_type="radio", options=["Yes, I have a disability", "No, I do not have a disability"]), "No, I do not have a disability")
+
+    def test_compliance_and_notice_period_dropdown_options(self):
+        # EXL style notice period options: must pick 'Less than 15 Days', not '30 Days'
+        exl_np_opts = ['Select an option', 'Less than 15 Days', '15 Days', '30 Days', '45 Days', '60 Days', '90 Days']
+        self.assertEqual(QASemanticsEngine.match_question("What is your notice period?", field_type="select", options=exl_np_opts), "Less than 15 Days")
+
+        # Prior employment / worked before
+        self.assertEqual(QASemanticsEngine.match_question("Have you Worked with exlservice.com (I) Pvt. Ltd. Or any Associate / Subsidiary Company ever before", field_type="text"), "No")
+        # Physical ailment
+        self.assertEqual(QASemanticsEngine.match_question("Have you passed through or are you passing through any physical ailment or state of health", field_type="text"), "No")
+        # Prior interview
+        self.assertEqual(QASemanticsEngine.match_question("Have you ever appeared for an Interview at any Exl location during the last 90 days?", field_type="text"), "No")
+        # Passport & Shifts
+        self.assertEqual(QASemanticsEngine.match_question("Do you have a Valid Indian Passport ?", field_type="select", options=["Select an option", "Yes", "No"]), "Yes")
+        self.assertEqual(QASemanticsEngine.match_question("Are you willing to work in shifts (Including Night Shifts) ?", field_type="select", options=["Select an option", "Yes", "No"]), "Yes")
 
 
 if __name__ == "__main__":

@@ -26,9 +26,10 @@ This directory provides a consolidated index of enterprise career portals where 
 | 20 | **McKinsey & Company** |  | [https://jobs.mckinsey.com...](https://jobs.mckinsey.com) |  |  |
 | 21 | **Bain & Company** | `enterprise_ats` | [careers.bain.com](https://careers.bain.com) | `[LOADED_FROM_ENV: CANDIDATE_EMAIL]` | `Email / Password` |
 | 22 | **BlackRock** | `workday` | [blackrock.wd1.myworkdayjobs.com](https://blackrock.wd1.myworkdayjobs.com/BlackRock_Professional) | `[LOADED_FROM_ENV: CANDIDATE_EMAIL]` | `Email / Password` |
+| 23 | **Yes Bank** | `enterprise_ats` | [careers.yesbank.in](https://careers.yesbank.in) | `[LOADED_FROM_ENV: CANDIDATE_EMAIL]` | `Email / Password` |
 
 ---
-**Total Registered Accounts:** 22
+**Total Registered Accounts:** 23
 
 > [!NOTE]
 > All automated login flows strictly use **Email & Password** authentication, bypassing third-party social logins (Google, Apple, LinkedIn) to protect candidate privacy and session persistence.

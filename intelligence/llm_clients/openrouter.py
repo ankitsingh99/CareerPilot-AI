@@ -26,16 +26,17 @@ _SECRETS_FILE = Path(__file__).parent.parent / ".candidate_secrets.json"
 _ENV_VAR = "OPENROUTER_API_KEY"
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-DEFAULT_FREE_MODEL = "cohere/north-mini-code:free"
+DEFAULT_FREE_MODEL = "recursive/flint-v1.0:free"
 
 DEFAULT_FALLBACK_FREE_MODELS = [
-    "cohere/north-mini-code:free",
-    "google/gemma-4-31b-it:free",
-    "google/gemma-4-26b-a4b-it:free",
+    "recursive/flint-v1.0:free",
+    "xingchen-agi/xing4.0-29b-a4b:free",
+    "nvidia/nemotron-3.5-super-vl:free",
+    "liquid/lfm-2.5-2.6b:free",
     "nvidia/nemotron-3.5-lightning:free",
     "poolside/laguna-s-2.1:free",
+    "thinkingmachines/inkling:free",
     "minimax/minimax-m3.1-flash:free",
-    "nvidia/nemotron-3-ultra-550b-a55b:free",
 ]
 
 # Mutable pool populated dynamically from OpenRouter live models catalog

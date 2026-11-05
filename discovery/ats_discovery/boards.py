@@ -239,10 +239,95 @@ def poll_workable(slug: str, timeout: int = 15) -> Iterator[Dict[str, Any]]:
         }
 
 
+def poll_bamboohr(slug: str, timeout: int = 15) -> Iterator[Dict[str, Any]]:
+    """Poll public BambooHR job board JSON endpoint."""
+    url = f"https://{slug}.bamboohr.com/careers/list"
+    r = _get(url, timeout)
+    data = r.json()
+    jobs = data.get("result", []) if isinstance(data, dict) else []
+    for j in jobs:
+        loc = j.get("location", {})
+        loc_str = f"{loc.get('city', '')}, {loc.get('state', '')}".strip(", ")
+        jid = str(j.get("id", ""))
+        job_url = f"https://{slug}.bamboohr.com/careers/{jid}"
+        yield {
+            "company": slug,
+            "company_slug": slug,
+            "title": (j.get("jobOpeningName") or "").strip(),
+            "url": job_url,
+            "apply_url": job_url,
+            "ats": "bamboohr",
+            "location": loc_str,
+            "workplace_type": "remote" if "remote" in loc_str.lower() else "",
+            "salary_min": None,
+            "salary_max": None,
+            "posted_at": None,
+            "jd_text": "",
+            "source": "boards:bamboohr",
+        }
+
+
+def poll_breezy(slug: str, timeout: int = 15) -> Iterator[Dict[str, Any]]:
+    """Poll public Breezy HR job board JSON endpoint."""
+    url = f"https://{slug}.breezy.hr/json"
+    r = _get(url, timeout)
+    jobs = r.json() if isinstance(r.json(), list) else []
+    for j in jobs:
+        loc = j.get("location", {})
+        loc_str = loc.get("name") or ""
+        is_remote = loc.get("is_remote", False) or "remote" in loc_str.lower()
+        job_url = j.get("url") or f"https://{slug}.breezy.hr/p/{j.get('id')}"
+        yield {
+            "company": slug,
+            "company_slug": slug,
+            "title": (j.get("name") or "").strip(),
+            "url": job_url,
+            "apply_url": job_url,
+            "ats": "breezy",
+            "location": loc_str,
+            "workplace_type": "remote" if is_remote else "",
+            "salary_min": None,
+            "salary_max": None,
+            "posted_at": j.get("published_date"),
+            "jd_text": html_to_text(j.get("description", ""))[:20000],
+            "source": "boards:breezy",
+        }
+
+
+def poll_recruitee(slug: str, timeout: int = 15) -> Iterator[Dict[str, Any]]:
+    """Poll public Recruitee job board JSON API."""
+    url = f"https://{slug}.recruitee.com/api/offers/"
+    r = _get(url, timeout)
+    data = r.json()
+    jobs = data.get("offers", []) if isinstance(data, dict) else []
+    for j in jobs:
+        loc_str = f"{j.get('city', '')}, {j.get('country', '')}".strip(", ")
+        desc = html_to_text(j.get("description", ""))
+        lo, hi = extract_salary(desc)
+        yield {
+            "company": slug,
+            "company_slug": slug,
+            "title": (j.get("title") or "").strip(),
+            "url": j.get("careers_url") or f"https://{slug}.recruitee.com/o/{j.get('slug')}",
+            "apply_url": j.get("careers_url") or f"https://{slug}.recruitee.com/o/{j.get('slug')}",
+            "ats": "recruitee",
+            "location": loc_str,
+            "workplace_type": "remote" if j.get("remote") else "",
+            "salary_min": lo,
+            "salary_max": hi,
+            "posted_at": j.get("published_at"),
+            "jd_text": desc[:20000],
+            "source": "boards:recruitee",
+        }
+
+
 POLLERS = {
     "greenhouse": poll_greenhouse,
     "lever": poll_lever,
     "ashby": poll_ashby,
     "smartrecruiters": poll_smartrecruiters,
     "workable": poll_workable,
+    "bamboohr": poll_bamboohr,
+    "breezy": poll_breezy,
+    "recruitee": poll_recruitee,
 }

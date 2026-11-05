@@ -102,8 +102,10 @@ def load_candidate_context() -> Dict[str, Any]:
         "major": major,
         "institution": institution,
         "gpa": gpa,
+        "notice_period": os.getenv("CANDIDATE_NOTICE_PERIOD", "Immediate Joiner (0 days notice)"),
         "notice_period_days": os.getenv("CANDIDATE_NOTICE_PERIOD_DAYS", "0"),
-        "notice_period_text": "Immediate Joiner (0 days notice)",
+        "current_company": os.getenv("CANDIDATE_CURRENT_COMPANY", "Rush by Kira"),
+        "verified_companies": os.getenv("CANDIDATE_VERIFIED_COMPANIES", "ZS Associates,Rush by Kira,TresVista"),
         "skills": "Python, SQL, PySpark, Snowflake, PostgreSQL, Trino, Oracle, Apache Airflow, Tableau, AWS (S3, SNS), Scikit-learn, AI Agents, LLM Fine-Tuning, RAG, Data Governance, HIPAA",
         "excluded_skills": "Java, Spring Boot, J2EE, Kubernetes production DevOps, Docker production DevOps, .NET, C#",
     }
@@ -184,15 +186,17 @@ def ask_openrouter_free_llm(question: str, options: Optional[List[str]] = None, 
         raw = response.strip()
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
-        valid_lines = [
-            ln for ln in lines
-            if not any(ln.lower().startswith(p) for p in [
-                "we need", "so for", "field question", "the instruction",
-                "candidate", "i would", "here is", "likely", "probably", "note:"
-            ])
-        ]
-        ans = valid_lines[-1].strip('"').strip("'").strip() if valid_lines else (lines[-1].strip('"').strip("'").strip() if lines else raw.strip('"').strip("'").strip())
-        if field_type != "textarea" and len(ans) > 70 and any(w in ans.lower() for w in ["we need", "candidate", "instruction", "field label", "preferred name", "likely"]):
+        clean_lines = []
+        for ln in lines:
+            cl = re.sub(r"^[\*\-•\d\.\s]+", "", ln).strip()
+            cl = re.sub(r"^\*\*.*?\*\*:?\s*", "", cl).strip()
+            if cl and not any(cl.lower().startswith(p) for p in [
+                "we need", "so for", "field question", "the instruction", "constraint",
+                "candidate", "i would", "here is", "likely", "probably", "note:", "output:"
+            ]):
+                clean_lines.append(cl)
+        ans = clean_lines[-1].strip('"').strip("'").strip() if clean_lines else (lines[-1].strip('"').strip("'").strip() if lines else raw.strip('"').strip("'").strip())
+        if field_type != "textarea" and (len(ans) > 70 or any(w in ans.lower() for w in ["we need", "candidate", "instruction", "constraint", "field label", "preferred name", "likely"])):
             ans = ""
         if ans:
             if options:
@@ -245,7 +249,8 @@ class QASemanticsEngine:
         r"\bpower\s*bi\b", r"\bpowerbi\b", r"\bgit\b", r"\bbitbucket\b",
         r"\blinux\b", r"\bunix\b", r"\bmachine\s*learning\b",
         r"\bscikit-learn\b", r"\bllm\b", r"\bai\s*agent\w*\b",
-        r"\brag\b", r"\bvector\s*db\b", r"\blangchain\b"
+        r"\brag\b", r"\bvector\s*db\b", r"\blangchain\b",
+        r"\bdatabases?\b", r"\brdbms\b"
     ]
 
     @classmethod
@@ -341,7 +346,15 @@ class QASemanticsEngine:
         if options:
             # Notice period options
             if any(k in lbl for k in ["notice", "availability", "how soon", "joining time"]):
-                for pref in ["immediate", "0 days", "0-15", "less than 1", "serving", "15 days", "1 month"]:
+                for opt in options:
+                    opt_l = opt.lower()
+                    if "immediate" in opt_l or re.search(r"(?<!\d)0\s*days\b", opt_l):
+                        return opt.strip()
+                for pref in ["less than 15", "0-15", "0 to 15", "less than 1", "serving", "15 days", "under 15"]:
+                    for opt in options:
+                        if pref in opt.lower():
+                            return opt.strip()
+                for pref in ["30 days", "1 month"]:
                     for opt in options:
                         if pref in opt.lower():
                             return opt.strip()
@@ -349,14 +362,17 @@ class QASemanticsEngine:
             # Yes / No options
             if any(k in lbl for k in [
                 "authorized", "relocate", "hybrid", "onsite", "travel", "background check",
-                "drug", "consent", "privacy", "terms", "agree", "shift", "shifts", "us hours"
+                "drug", "consent", "privacy", "terms", "agree", "shift", "shifts", "us hours",
+                "passport", "valid passport"
             ]):
                 for opt in options:
                     if opt.strip().lower() == "yes" or opt.strip().lower().startswith("yes"):
                         return opt.strip()
 
             if any(k in lbl for k in [
-                "sponsorship", "referral", "relationship", "relative", "felony", "crime", "non-compete"
+                "sponsorship", "referral", "relationship", "relative", "felony", "crime", "non-compete",
+                "worked with", "worked before", "previously employed", "previous employment", "physical ailment",
+                "ailment", "state of health", "interview at", "interviewed", "interview in last", "appeared for an interview"
             ]):
                 for opt in options:
                     if opt.strip().lower() == "no" or opt.strip().lower().startswith("no"):
@@ -364,7 +380,7 @@ class QASemanticsEngine:
 
             # Degree options
             if any(k in lbl for k in ["degree", "education", "qualification"]):
-                for pref in ["bachelor", "undergraduate", "ba", "b.a", "graduate"]:
+                for pref in ["bachelor of arts", "bachelor's", "bachelors", "bachelor", "undergraduate", "ba", "b.a", "graduate"]:
                     for opt in options:
                         if pref in opt.lower():
                             return opt.strip()
@@ -452,6 +468,10 @@ class QASemanticsEngine:
                     if cand["city"].lower() in opt_clean.lower() or re.search(r"\bindia\b", opt_clean, re.IGNORECASE):
                         return opt_clean
 
+        # ── 0. COMPENSATION NEGOTIABILITY ────────────────────────────────────────
+        if any(k in lbl for k in ["negotiable", "open to negotiation", "is your ctc negotiable", "is your salary negotiable"]):
+            return "Yes"
+
         # ── 1. TITLE / DESIGNATION OVERRIDE ──────────────────────────────────────
         if any(k in lbl for k in [
             "your title", "job title", "current title", "designation", "headline", "current role title",
@@ -459,13 +479,25 @@ class QASemanticsEngine:
         ]):
             return cand["designation"]
 
+        # ── 1.5 CURRENT EMPLOYER / COMPANY ───────────────────────────────────────
+        if any(k in lbl for k in [
+            "current company", "current employer", "present company", "present employer",
+            "company name", "most recent employer", "employer name", "organization name",
+            "current organization"
+        ]) and not any(k in lbl for k in ["previous", "why this", "about us", "referred"]):
+            return cand["current_company"]
+
+        # ── 1.9 COMPENSATION NEGOTIABILITY ───────────────────────────────────────
+        if any(k in lbl for k in ["negotiable", "open to negotiation", "is your ctc negotiable", "is your salary negotiable"]):
+            return "Yes"
+
         # ── 2. COMPENSATION: DESIRED / EXPECTED CTC ──────────────────────────────
         if any(k in lbl for k in [
             "desired salary", "desired compensation", "desired ctc", "desired income",
             "desired pay", "expected salary", "expected ctc", "expected compensation",
             "expected income", "expected package", "salary expectation", "ctc expectation",
             "expected annual", "minimum salary", "pay expectation", "desired rate", "quote your ctc"
-        ]):
+        ]) and "negotiable" not in lbl:
             is_lpa = any(k in lbl for k in ["lpa", "lac", "lakh", "decimal", "in lacs", "in lakhs", "in lpa"])
             if upper_salary and upper_salary[0]:
                 return upper_salary[1] if is_lpa else upper_salary[0]
@@ -487,14 +519,20 @@ class QASemanticsEngine:
 
         # ── 4. NOTICE PERIOD / AVAILABILITY ──────────────────────────────────────
         if any(k in lbl for k in [
-            "notice period", "notice days", "availability", "how soon", "joining time",
+            "notice days", "days notice", "how many days notice", "notice period in days",
+            "how many days can you join", "in how many days", "availability to join (in days)",
+            "availability to start (in days)", "notice in days"
+        ]) or (field_type == "number" and any(k in lbl for k in ["notice", "availability", "joining"])):
+            return "0"
+
+        if any(k in lbl for k in [
+            "notice period", "availability", "how soon", "joining time",
             "earliest start date", "available to start", "days notice", "how many days notice",
-            "serving notice", "notice period in days", "availability to join",
-            "how many days can you join", "in how many days"
+            "serving notice", "availability to join"
         ]):
-            if field_type == "number" or any(k in lbl for k in ["day", "days", "in days", "how many days", "month", "months"]):
-                return cand["notice_period_days"]
-            return cand["notice_period_text"]
+            if field_type == "number":
+                return "0"
+            return cand["notice_period"]
 
         # ── 5. CONTACT & PERSONAL IDENTITY ───────────────────────────────────────
         # Referral question guard (must precede name matching to avoid capturing "first and last name of employee")
@@ -554,7 +592,26 @@ class QASemanticsEngine:
             if re.search(pat, lbl):
                 return "0"
 
-        # ── 8. CORE TECH EXPERIENCE CHECK (CANDIDATE EXPERIENCE: 4 or 4.8) ───────
+        # ── 8. SPECIFIC & CORE TECH EXPERIENCE CHECK ─────────────────────────────
+        # Azure Cloud / Synapse / Data Factory -> 2 years
+        if any(k in lbl for k in ["azure", "synapse", "data factory", "adf", "azure cloud"]) and any(k in lbl for k in ["year", "yoe", "experience", "how many"]):
+            return "2"
+
+        # Databricks / Spark -> 4 years
+        if any(k in lbl for k in ["databricks", "spark", "pyspark", "apache spark"]) and any(k in lbl for k in ["year", "yoe", "experience", "how many"]):
+            return "4"
+
+        # Power BI / QuickSight / BI Dashboards -> 4 years
+        if any(k in lbl for k in ["power bi", "powerbi", "quicksight", "tableau", "bi tool", "dashboard"]) and any(k in lbl for k in ["year", "yoe", "experience", "how many"]):
+            return "4"
+
+        # GCP / BigQuery -> 4 years
+        if any(k in lbl for k in ["gcp", "bigquery", "google cloud", "cloud storage"]) and any(k in lbl for k in ["year", "yoe", "experience", "how many"]):
+            return "4"
+
+        if any(k in lbl for k in ["database", "databases", "rdbms", "sql"]) and any(k in lbl for k in ["year", "yoe", "experience", "how many"]):
+            return "4"
+
         for pat in cls.CORE_TECH_PATTERNS:
             if re.search(pat, lbl) and any(k in lbl for k in ["year", "yoe", "experience", "how many", "level"]):
                 return cand["yoe_int"]
@@ -570,6 +627,33 @@ class QASemanticsEngine:
                 return "No"
             return ""
 
+        # City residence check: Factual (Candidate lives in Noida/NCR, open to relocate)
+        # If question specifically asks if candidate currently resides in another city (e.g. Bangalore, Mumbai, Pune, Hyderabad)
+        # Note: Relocation willingness is handled under positive compliance ('Yes')
+        if any(k in lbl for k in [
+            "currently residing in bengaluru", "currently residing in bangalore", "currently based in bengaluru",
+            "currently based in bangalore", "currently in mumbai", "currently residing in mumbai",
+            "currently in hyderabad", "currently residing in hyderabad", "currently in pune", "currently residing in pune",
+            "currently based in hyderabad", "currently based in pune", "currently based in chennai"
+        ]) and not any(k in lbl for k in ["relocate", "open to", "comfortable"]):
+            return "No"
+
+        # Currently residing in Delhi/Noida/NCR -> Yes
+        if any(k in lbl for k in ["delhi", "noida", "gurugram", "gurgaon", "ncr"]) and any(k in lbl for k in ["currently", "reside", "based in", "from"]):
+            return "Yes"
+
+        # Currently Employed -> Yes
+        if any(k in lbl for k in ["currently employed", "are you employed", "presently employed"]):
+            return "Yes"
+
+        # Active job offers in hand -> Yes
+        if any(k in lbl for k in ["active job offers", "job offers in hand", "offer in hand", "holding any offer", "any other offers"]):
+            return "Yes"
+
+        # CTC Negotiable -> Yes
+        if any(k in lbl for k in ["negotiable", "is your ctc negotiable", "is your salary negotiable", "open to negotiation"]):
+            return "Yes"
+
         # Negative compliance & demographic questions (Always 'No')
         if any(k in lbl for k in [
             "visa sponsorship", "require sponsorship", "need sponsorship", "require visa",
@@ -577,6 +661,10 @@ class QASemanticsEngine:
             "current employee", "know anyone", "family member", "relative",
             "felony", "criminal", "convicted", "crime", "misdemeanor",
             "non-compete", "non compete", "non-solicitation", "restrictive agreement",
+            "worked with", "worked before", "previously employed", "previous employment",
+            "associate / subsidiary", "worked for", "employee id",
+            "physical ailment", "state of health", "medical condition", "maternity leave", "on leave during last 12 months",
+            "appeared for an interview", "interview at any", "interviewed with", "interviewed during", "interview in last",
             "lgbtq", "identify as lgbtq", "sexual orientation", "veteran", "military", "disability", "disabled"
         ]):
             return "No"
@@ -584,9 +672,10 @@ class QASemanticsEngine:
         # Positive compliance questions (Always 'Yes')
         if any(k in lbl for k in [
             "authorized to work in india", "authorized to work", "legally authorized", "right to work",
-            "relocate", "relocation", "hybrid", "onsite", "in-office",
+            "relocate", "relocation", "hybrid", "onsite", "in-office", "5 days onsite", "five days onsite", "remote",
             "travel", "willing to travel", "rotational", "flexible hours", "timezones",
-            "us hours", "shift", "shifts", "background check", "drug test",
+            "us hours", "shift", "shifts", "night shift", "night shifts", "background check", "drug test",
+            "passport", "valid passport", "indian passport",
             "agree to", "consent", "privacy policy", "terms and conditions", "gdpr",
             "talent community", "receive alerts", "future job alerts"
         ]):
