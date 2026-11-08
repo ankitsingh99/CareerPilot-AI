@@ -118,6 +118,47 @@ def alert(title: str, message: str):
         pass
 
 
+FAILED_APPS_CSV = ROOT_DIR / "user_inputs" / "failed_applications.csv"
+
+def record_failed_application(company: str, role: str, job_url: str, reason: str, details: str = ""):
+    """Record skipped, blocked, or failed Easy Apply attempts for diagnosis and review."""
+    today = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    fields = ["timestamp", "company", "role", "job_url", "reason", "details"]
+    try:
+        file_exists = FAILED_APPS_CSV.exists()
+        FAILED_APPS_CSV.parent.mkdir(parents=True, exist_ok=True)
+        with open(FAILED_APPS_CSV, mode="a", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fields)
+            if not file_exists:
+                writer.writeheader()
+            writer.writerow({
+                "timestamp": today,
+                "company": company,
+                "role": role,
+                "job_url": job_url,
+                "reason": reason,
+                "details": details[:250]
+            })
+    except Exception:
+        pass
+
+def extract_min_yoe_requirement(desc_text: str) -> Optional[int]:
+    """Extract required years of experience from job description if explicitly stated."""
+    if not desc_text:
+        return None
+    patterns = [
+        r'(?:minimum|at least|req(?:uire[sd]?)?)\s*(?:of)?\s*(\d+)\+?\s*years?',
+        r'(\d+)\+?\s*years?(?:\s+of)?\s+(?:relevant\s+)?experience',
+        r'(\d+)\s*(?:-|to)\s*(\d+)\s*years?(?:\s+of)?\s+experience',
+    ]
+    max_found = 0
+    for pat in patterns:
+        for match in re.finditer(pat, desc_text, re.IGNORECASE):
+            val = int(match.group(1))
+            if 0 < val <= 25:
+                max_found = max(max_found, val)
+    return max_found if max_found > 0 else None
+
 def record_application(company: str, role: str, job_url: str, cv_path: str):
     """Append applied job to tracker CSV and jobs.db SQLite database."""
     today = datetime.now().strftime("%Y-%m-%d")
@@ -348,6 +389,39 @@ def ask_openrouter_free(question: str, options: Optional[List[str]] = None, fiel
 
 # ── Q&A Answer Logic ──────────────────────────────────────────────────────────
 
+def ask_user_for_answer(question: str, field_type: str = "text", options: list = None, timeout: int = 120) -> str:
+    """
+    Autonomously synthesize or resolve answer for screening question based on candidate profile.
+    Acts as a true end-to-end automated agent, avoiding manual prompt stalls.
+    """
+    clean_q = re.sub(r"\s+", " ", question).strip()
+    user_ans = ""
+
+    # 1. First, synthesize autonomously from candidate profile and knowledge base
+    try:
+        from core.qa_semantics_engine import QASemanticsEngine
+        user_ans = QASemanticsEngine.synthesize_autonomous_answer(clean_q, field_type=field_type, options=options)
+    except Exception as synth_err:
+        print(f"  [Auto-Synthesize Note] {synth_err}")
+
+    if user_ans and user_ans != "N/A":
+        print(f"  [✓] Autonomously answered from candidate profile: '{user_ans}' (Question: {clean_q[:60]})")
+        save_to_qa_knowledge_base(clean_q, user_ans)
+        _QA_CACHE[clean_q] = user_ans
+        try:
+            from core.qa_semantics_engine import QASemanticsEngine
+            QASemanticsEngine.record_answer(clean_q, user_ans, field_type=field_type)
+        except Exception:
+            pass
+        return user_ans
+
+    # Fallback default
+    fallback = options[0] if options else "Yes"
+    save_to_qa_knowledge_base(clean_q, fallback)
+    _QA_CACHE[clean_q] = fallback
+    return fallback
+
+
 def extract_upper_salary(page: Page) -> tuple[Optional[str], Optional[str]]:
     """
     Extract upper salary value from job posting text if a range is present.
@@ -390,14 +464,19 @@ def answer_modal_questions(page: Page):
 
     up_sal = extract_upper_salary(page)
 
-    # ── 1. TEXT / NUMBER / TEL / URL inputs ────────────────────────────────────
+    MODAL_SCOPE = "dialog[data-testid='dialog'], [data-sdui-screen*='EasyApply'], [role='dialog'], .jobs-easy-apply-modal, .artdeco-modal"
+    scope = page.query_selector(MODAL_SCOPE) or page
+
+    # ── 1. TEXT / NUMBER / TEL / URL / DATE inputs ────────────────────────────
     selectors = (
-        ".jobs-easy-apply-modal input[type='text'],"
-        ".jobs-easy-apply-modal input[type='number'],"
-        ".jobs-easy-apply-modal input[type='tel'],"
-        ".jobs-easy-apply-modal input[type='url']"
+        "input[type='text'],"
+        "input[type='number'],"
+        "input[type='tel'],"
+        "input[type='url'],"
+        "input[type='date'],"
+        "input:not([type])"
     )
-    for inp in page.query_selector_all(selectors):
+    for inp in scope.query_selector_all(selectors):
         try:
             if not inp.is_visible():
                 continue
@@ -427,27 +506,51 @@ def answer_modal_questions(page: Page):
                 field_type=inp_type,
                 upper_salary=up_sal
             )
+            if not ans or ans == "N/A":
+                is_req = inp.get_attribute("required") is not None or inp.get_attribute("aria-required") == "true"
+                if is_req:
+                    clean_lbl = lbl_text or placeholder or aria_lbl or inp_id
+                    ans = ask_user_for_answer(clean_lbl, field_type=inp_type)
+
             if ans and ans != "N/A":
                 inp.fill(ans)
         except Exception:
             pass
 
     # ── 2. TEXTAREA ────────────────────────────────────────────────────────────
-    for ta in page.query_selector_all(".jobs-easy-apply-modal textarea"):
+    for ta in scope.query_selector_all("textarea"):
         try:
-            if not ta.is_visible() or ta.input_value():
+            if not ta.is_visible():
                 continue
             ta_id = ta.get_attribute("id") or ""
             lbl_el = page.query_selector(f"label[for='{ta_id}']") if ta_id else None
-            lbl = (lbl_el.inner_text() if lbl_el else "").strip()
+            lbl_text = (lbl_el.inner_text() if lbl_el else "").strip()
+            placeholder = (ta.get_attribute("placeholder") or "").strip()
+            aria_lbl = (ta.get_attribute("aria-label") or "").strip()
+            parent_lbl = ta.evaluate("el => el.closest('.fb-dash-form-element, fieldset, div')?.querySelector('label, legend, span, p')?.innerText || ''").strip()
+            lbl = f"{lbl_text} {aria_lbl} {placeholder} {parent_lbl}".strip()
             
-            ans = QASemanticsEngine.match_question(lbl or "Describe candidate qualifications", field_type="textarea")
+            # If current value is invalid or wrong, or empty, recompute
+            cur_val = ta.input_value()
+            needs_fill = not cur_val or (
+                any(k in lbl.lower() for k in ["compensation", "salary", "ctc", "pay"]) and
+                any(k in cur_val.lower() for k in ["bachelor", "degree", "economics", "consultant", "experience"])
+            )
+            if not needs_fill:
+                continue
+
+            ans = QASemanticsEngine.match_question(lbl or "Describe candidate qualifications", field_type="textarea", upper_salary=up_sal)
+            if not ans or ans == "N/A":
+                is_req = ta.get_attribute("required") is not None or ta.get_attribute("aria-required") == "true"
+                if is_req:
+                    ans = ask_user_for_answer(lbl or "Candidate Qualifications", field_type="textarea")
+
             ta.fill(ans if ans and ans != "N/A" else "4.8 years of experience in Data Engineering, Analytics & AI Agent Development.")
         except Exception:
             pass
 
     # ── 3. DROPDOWNS / SELECT ───────────────────────────────────────────────────
-    for sel in page.query_selector_all(".jobs-easy-apply-modal select"):
+    for sel in scope.query_selector_all("select"):
         try:
             if not sel.is_visible():
                 continue
@@ -459,6 +562,41 @@ def answer_modal_questions(page: Page):
             opt_texts = [o.inner_text().strip() for o in options if o.inner_text().strip()]
             if not opt_texts:
                 continue
+
+            # ── 3a. Handle Date Dropdowns (Work Experience & Education Month/Year) ──
+            is_month_dropdown = any(m in opt_texts for m in ["January", "Jan", "February", "Feb"])
+            is_year_dropdown = any(y in opt_texts for y in ["2020", "2021", "2022", "2023", "2024"])
+
+            if is_month_dropdown or is_year_dropdown:
+                container_text = sel.evaluate("""el => {
+                    const p = el.closest('fieldset, .fb-dash-form-element, div[class*="date"], div');
+                    return p ? (p.innerText || '') : '';
+                }""").lower()
+                is_end_date = "end" in container_text or "to" in container_text or "graduation" in container_text
+                is_education = "education" in container_text or "degree" in container_text or "school" in container_text or "university" in container_text
+                target_val = None
+                if is_month_dropdown:
+                    target_month = "July" if is_education else ("July" if is_end_date else "October")
+                    for opt in options:
+                        t = opt.inner_text().strip()
+                        if t.lower().startswith(target_month.lower()[:3]):
+                            target_val = opt.get_attribute("value") or t
+                            break
+                elif is_year_dropdown:
+                    if is_education:
+                        target_year = "2020" if is_end_date else "2017"
+                    else:
+                        target_year = "2024" if is_end_date else "2020"
+                    for opt in options:
+                        t = opt.inner_text().strip()
+                        if target_year in t:
+                            target_val = opt.get_attribute("value") or t
+                            break
+                if target_val is not None:
+                    sel.select_option(value=target_val)
+                    sel.dispatch_event("change")
+                    print(f"  [Date Dropdown] Selected '{target_val}' ({'End' if is_end_date else 'Start'} {'Month' if is_month_dropdown else 'Year'})")
+                    continue
 
             sel_id = sel.get_attribute("id") or ""
             lbl_el = page.query_selector(f"label[for='{sel_id}']") if sel_id else None
@@ -475,7 +613,7 @@ def answer_modal_questions(page: Page):
 
             ans = QASemanticsEngine.match_question(lbl or sel_id, field_type="select", options=opt_texts)
             if not ans or ans == "N/A":
-                ans = ask_openrouter_free(lbl or sel_id, options=opt_texts, field_type="select")
+                ans = ask_user_for_answer(lbl or sel_id, field_type="select", options=opt_texts)
 
             if ans and ans != "N/A":
                 ans_clean = ans.strip().lower()
@@ -509,31 +647,56 @@ def answer_modal_questions(page: Page):
         except Exception:
             pass
 
-    # ── 4. RADIO BUTTONS ────────────────────────────────────────────────────────
-    for fs in page.query_selector_all(".jobs-easy-apply-modal fieldset"):
-        try:
-            legend = fs.query_selector("legend")
-            leg_text = (legend.inner_text() if legend else "").strip().lower()
-            if not leg_text:
-                leg_text = (fs.get_attribute("aria-label") or "").strip().lower()
-            if not leg_text:
-                try:
-                    leg_text = fs.evaluate("el => el.querySelector('.fb-dash-form-element__label, label, span')?.innerText || ''").strip().lower()
-                except Exception:
-                    pass
+    # ── 4. RADIO BUTTONS (Robust Name-Based Grouping for SDUI & Standard HTML) ─
+    all_radios = scope.query_selector_all("input[type='radio']")
+    radio_groups = {}
+    for r in all_radios:
+        if not r.is_visible():
+            continue
+        r_name = r.get_attribute("name") or f"unnamed_{id(r)}"
+        radio_groups.setdefault(r_name, []).append(r)
 
-            radios = fs.query_selector_all("input[type='radio']")
+    for group_name, radios in radio_groups.items():
+        try:
             if not radios or any(r.is_checked() for r in radios):
                 continue
 
+            first_r = radios[0]
+            leg_text = first_r.evaluate("""el => {
+                const aria = el.getAttribute('aria-label');
+                if (aria && aria.trim()) return aria.trim();
+                const fs = el.closest('fieldset');
+                if (fs) {
+                    const leg = fs.querySelector('legend');
+                    if (leg && leg.innerText.trim()) return leg.innerText.trim();
+                }
+                const rg = el.closest('[role="radiogroup"], .fb-dash-form-element, div[class*="form"], div');
+                if (rg) {
+                    const p = rg.parentElement;
+                    const prev = p ? p.querySelector('label, [class*="label"], p, span, h3, h4, legend') : null;
+                    if (prev && prev.innerText.trim()) return prev.innerText.trim();
+                    const direct = rg.querySelector('label, [class*="label"], p, span, legend');
+                    if (direct && direct.innerText.trim()) return direct.innerText.trim();
+                }
+                return '';
+            }""").strip().lower()
+
             radio_labels = []
             for r in radios:
-                r_id = r.get_attribute("id") or ""
-                lbl_el = fs.query_selector(f"label[for='{r_id}']")
-                if lbl_el:
-                    radio_labels.append(lbl_el.inner_text().strip())
+                r_lbl = r.evaluate("""el => {
+                    let optText = "";
+                    let p = el.parentElement;
+                    for (let i = 0; i < 3 && p; i++) {
+                        const t = (p.innerText || "").trim();
+                        if (t && t !== el.getAttribute("aria-label")) { optText = t; break; }
+                        p = p.parentElement;
+                    }
+                    return (optText || el.value || "").trim();
+                }""").strip()
+                if r_lbl:
+                    radio_labels.append(r_lbl)
 
-            # Direct Demographic Rules
+            # Direct Demographic & Enterprise Rules
             if (any(k in leg_text for k in ["gender", "what is your gender", "biological sex", "gender identity"]) or re.search(r"\bsex\b", leg_text)) and "orientation" not in leg_text:
                 ans = "Male"
             elif any(k in leg_text for k in ["lgbtq", "identify as lgbtq", "sexual orientation"]):
@@ -542,10 +705,22 @@ def answer_modal_questions(page: Page):
                 ans = "No"
             elif any(k in leg_text for k in ["disability", "disabled"]):
                 ans = "No"
+            elif any(k in leg_text for k in ["personal relationship", "relationship with a current", "relationship with employee"]):
+                ans = "No"
+            elif any(k in leg_text for k in ["booking holdings", "presently employed"]):
+                ans = "No"
+            elif any(k in leg_text for k in ["use of personal data", "personal data"]):
+                ans = "Yes"
+            elif any(k in leg_text for k in ["sms updates", "text/sms updates"]):
+                ans = "Yes"
+            elif any(k in leg_text for k in ["newsletters", "email me about other job openings"]):
+                ans = "Yes"
+            elif any(k in leg_text for k in ["previously applied"]):
+                ans = "No"
             else:
                 ans = QASemanticsEngine.match_question(leg_text or "Screening question", field_type="radio", options=radio_labels)
                 if not ans or ans == "N/A":
-                    ans = ask_openrouter_free(leg_text or "Screening question", options=radio_labels, field_type="radio")
+                    ans = ask_user_for_answer(leg_text or "Screening question", field_type="radio", options=radio_labels)
 
             if ans and ans != "N/A":
                 ans_clean = ans.strip().lower()
@@ -553,57 +728,105 @@ def answer_modal_questions(page: Page):
 
                 # 1. Exact match first
                 for r in radios:
-                    r_id = r.get_attribute("id") or ""
-                    lbl_el = fs.query_selector(f"label[for='{r_id}']")
-                    lbl_txt = (lbl_el.inner_text() if lbl_el else "").strip().lower()
+                    lbl_txt = r.evaluate("""el => {
+                        let optText = "";
+                        let p = el.parentElement;
+                        for (let i = 0; i < 3 && p; i++) {
+                            const t = (p.innerText || "").trim();
+                            if (t && t !== el.getAttribute("aria-label")) { optText = t; break; }
+                            p = p.parentElement;
+                        }
+                        return (optText || el.value || "").trim().toLowerCase();
+                    }""")
                     if ans_clean == lbl_txt:
-                        matched_r, matched_lbl, matched_txt = r, lbl_el, lbl_txt
+                        matched_r, matched_txt = r, lbl_txt
                         break
 
                 # 2. Word boundary regex (strictly avoid "female" matching "male")
                 if not matched_r:
                     for r in radios:
-                        r_id = r.get_attribute("id") or ""
-                        lbl_el = fs.query_selector(f"label[for='{r_id}']")
-                        lbl_txt = (lbl_el.inner_text() if lbl_el else "").strip().lower()
+                        lbl_txt = r.evaluate("""el => {
+                            let optText = "";
+                            let p = el.parentElement;
+                            for (let i = 0; i < 3 && p; i++) {
+                                const t = (p.innerText || "").trim();
+                                if (t && t !== el.getAttribute("aria-label")) { optText = t; break; }
+                                p = p.parentElement;
+                            }
+                            return (optText || el.value || "").trim().toLowerCase();
+                        }""")
                         if ans_clean == "male" and "female" in lbl_txt:
                             continue
                         if re.search(r"\b" + re.escape(ans_clean) + r"\b", lbl_txt):
-                            matched_r, matched_lbl, matched_txt = r, lbl_el, lbl_txt
+                            matched_r, matched_txt = r, lbl_txt
                             break
 
                 # 3. Fallback loose match only if not male/female or boolean
                 if not matched_r and ans_clean not in ("male", "no"):
                     for r in radios:
-                        r_id = r.get_attribute("id") or ""
-                        lbl_el = fs.query_selector(f"label[for='{r_id}']")
-                        lbl_txt = (lbl_el.inner_text() if lbl_el else "").strip().lower()
+                        lbl_txt = r.evaluate("""el => {
+                            let optText = "";
+                            let p = el.parentElement;
+                            for (let i = 0; i < 3 && p; i++) {
+                                const t = (p.innerText || "").trim();
+                                if (t && t !== el.getAttribute("aria-label")) { optText = t; break; }
+                                p = p.parentElement;
+                            }
+                            return (optText || el.value || "").trim().toLowerCase();
+                        }""")
                         if ans_clean in lbl_txt or lbl_txt in ans_clean:
-                            matched_r, matched_lbl, matched_txt = r, lbl_el, lbl_txt
+                            matched_r, matched_txt = r, lbl_txt
                             break
 
                 if matched_r:
                     try:
-                        if matched_lbl and matched_lbl.is_visible():
-                            matched_lbl.click()
-                        else:
-                            matched_r.check(force=True)
+                        page.evaluate("""(r) => {
+                            let p = r.parentElement;
+                            for (let i = 0; i < 2 && p; i++) {
+                                p.click();
+                                p = p.parentElement;
+                            }
+                            r.click();
+                            r.checked = true;
+                            r.dispatchEvent(new Event('input', { bubbles: true }));
+                            r.dispatchEvent(new Event('change', { bubbles: true }));
+                        }""", matched_r)
                     except Exception:
-                        matched_r.check(force=True)
-                    print(f"  [Radio] Selected '{matched_txt}' for '{leg_text[:30]}'")
+                        try:
+                            if matched_lbl and matched_lbl.is_visible():
+                                matched_lbl.click()
+                            else:
+                                matched_r.check(force=True)
+                        except Exception:
+                            pass
+                    print(f"  [Radio] Selected '{matched_txt or ans}' for '{leg_text[:30]}'")
         except Exception:
             pass
 
-    # ── 5. CHECKBOXES (consent, terms) ──────────────────────────────────────────
-    for cb in page.query_selector_all(".jobs-easy-apply-modal input[type='checkbox']"):
+    # ── 5. CHECKBOXES (consent, terms, and candidate skills) ───────────────────────
+    CORE_SKILLS = ["sql", "python", "pyspark", "spark", "snowflake", "airflow", "tableau", "aws", "postgresql", "bigquery", "databricks", "trino", "excel", "powerbi", "git", "linux", "etl"]
+
+    for cb in scope.query_selector_all("input[type='checkbox']"):
         try:
             if not cb.is_visible() or cb.is_checked():
                 continue
             cb_id = cb.get_attribute("id") or ""
-            lbl_el = page.query_selector(f"label[for='{cb_id}']")
-            lbl_txt = (lbl_el.inner_text() if lbl_el else "").lower()
+            lbl_el = page.query_selector(f"label[for='{cb_id}']") if cb_id else None
+            lbl_txt = (lbl_el.inner_text() if lbl_el else "").strip().lower()
+            if not lbl_txt:
+                lbl_txt = cb.evaluate("el => (el.closest('label, li, div')?.innerText || el.getAttribute('aria-label') || '')").strip().lower()
+
+            # 1. Terms & consent
             if any(k in lbl_txt for k in ["agree", "consent", "accept", "terms", "privacy", "policy", "acknowledge"]):
                 cb.check()
+                print(f"  [Checkbox] Checked terms/consent: '{lbl_txt[:30]}'")
+                continue
+
+            # 2. Candidate core technical skills
+            if any(skill in lbl_txt for skill in CORE_SKILLS) and "none" not in lbl_txt:
+                cb.check()
+                print(f"  [Checkbox] Checked skill: '{lbl_txt[:30]}'")
+                continue
         except Exception:
             pass
 
@@ -634,6 +857,7 @@ def clear_all_overlays(page: Page):
                 const discardSelectors = [
                     'button[data-control-name="discard_application_confirm_btn"]',
                     'button.artdeco-modal__confirm-dialog-btn',
+                    'button[data-test-dialog-secondary-action]',
                 ];
                 for (const sel of discardSelectors) {
                     const btn = document.querySelector(sel);
@@ -655,9 +879,14 @@ def clear_all_overlays(page: Page):
         page.evaluate("""
             () => {
                 const dismissSelectors = [
+                    'dialog[data-testid="dialog"] button[aria-label*="Dismiss" i]',
+                    'dialog[data-testid="dialog"] button[aria-label*="Close" i]',
+                    '[data-sdui-screen*="EasyApply"] button[aria-label*="Dismiss" i]',
+                    '[data-sdui-screen*="EasyApply"] button[aria-label*="Close" i]',
                     '.jobs-easy-apply-modal button[aria-label="Dismiss"]',
                     '.jobs-easy-apply-modal button[aria-label="Fermer"]',
                     'button[aria-label="Dismiss"]',
+                    'button[aria-label="Close"]',
                 ];
                 for (const sel of dismissSelectors) {
                     const btn = document.querySelector(sel);
@@ -698,40 +927,315 @@ def apply_to_current_job(page: Page, review_only: bool = False) -> bool:
     except Exception:
         pass
 
-    btn = page.query_selector(".jobs-apply-button")
-    if not btn or not btn.is_visible():
-        return False
-    if "easy apply" not in btn.inner_text().strip().lower():
+    # ── Easy Apply Button Resolution (Polling up to 4.0s) ─────────────────
+    btn = None
+    easy_apply_selectors = [
+        "button[aria-label*='Easy Apply' i]",
+        "a[aria-label*='Easy Apply' i]",
+        "button.jobs-apply-button",
+        "a.jobs-apply-button",
+        ".jobs-apply-button--top-card button",
+        ".jobs-apply-button--top-card a",
+        ".jobs-s-apply button",
+        ".jobs-s-apply a",
+        "[data-view-name='job-details'] button:has-text('Easy Apply')",
+        "[data-view-name='job-details'] a:has-text('Easy Apply')",
+        "button:has-text('Easy Apply')",
+        "a:has-text('Easy Apply')",
+        "[role='button']:has-text('Easy Apply')",
+        "div[aria-label*='Easy Apply' i]"
+    ]
+
+    for poll_idx in range(8):
+        # 1. Check if already applied
+        applied_el = page.query_selector(".jobs-applied-badge, [aria-label*='Applied' i], span:has-text('Applied')")
+        if applied_el and applied_el.is_visible():
+            applied_txt = (applied_el.inner_text() or "").strip()
+            if "applied" in applied_txt.lower():
+                print(f"  [-] Already applied on LinkedIn ('{applied_txt}').")
+                return False
+
+        # 2. Check for Easy Apply button
+        for sel in easy_apply_selectors:
+            try:
+                candidate_btn = page.query_selector(sel)
+                if candidate_btn and candidate_btn.is_visible():
+                    c_txt = (candidate_btn.inner_text() or "").strip().lower()
+                    c_aria = (candidate_btn.get_attribute("aria-label") or "").lower()
+                    if "easy apply" in c_txt or "easy apply" in c_aria:
+                        btn = candidate_btn
+                        break
+            except Exception:
+                pass
+        if btn:
+            break
+
+        # 3. Check for external Apply
+        ext_el = page.query_selector("button.jobs-apply-button, a.jobs-apply-button, button:has-text('Apply')")
+        if ext_el and ext_el.is_visible():
+            ext_txt = (ext_el.inner_text() or "").strip().lower()
+            if ext_txt == "apply" or "apply on company website" in (ext_el.get_attribute("aria-label") or "").lower():
+                print(f"  [-] Skipped external company site application (not Easy Apply).")
+                return False
+
+        time.sleep(0.5)
+
+    if not btn:
+        print("  [-] Easy Apply button not found (posting may be loading, expired, or non-Easy Apply).")
         return False
 
     print("  [+] Clicking 'Easy Apply'…")
     try:
+        btn.scroll_into_view_if_needed()
+        time.sleep(0.2)
         btn.click(timeout=4000)
     except Exception:
         page.evaluate("(el) => el.click()", btn)
     time.sleep(2)
 
-    # Check for LinkedIn daily rate limit message
-    try:
-        body_text = (page.inner_text("body") or "").lower()
-        if any(k in body_text for k in ["reached the daily application limit", "reached the application limit", "cannot apply to any more jobs", "daily application limit"]):
-            print("  [!] LinkedIn daily limit alert detected on page!")
-            alert("LinkedIn Daily Limit", "LinkedIn stated that your daily application limit has been reached.")
-            raise RuntimeError("LINKEDIN_DAILY_LIMIT_REACHED")
-    except RuntimeError:
-        raise
-    except Exception:
-        pass
+    MODAL_SEL = "dialog[data-testid='dialog'], [data-sdui-screen*='EasyApply'], [role='dialog'], .jobs-easy-apply-modal, .artdeco-modal"
+    modal = None
+    for _ in range(8):
+        modal = page.query_selector(MODAL_SEL)
+        if modal and modal.is_visible():
+            break
+        time.sleep(0.5)
 
-    if not page.query_selector(".jobs-easy-apply-modal"):
+    if not modal or not modal.is_visible():
         print("  [-] Modal did not appear.")
         return False
 
+    # Check for LinkedIn daily Easy Apply limit popup or page warning
+    modal_txt = (modal.inner_text() or "").replace("’", "'").lower()
+    page_txt = (page.inner_text("body") or "").replace("’", "'").lower()
+    combined_alert_text = f"{modal_txt} {page_txt}"
+    limit_keywords = [
+        "reached today's easy apply limit",
+        "limit easy apply submissions",
+        "continue applying tomorrow",
+        "reached the daily application limit",
+        "reached the application limit",
+        "cannot apply to any more jobs",
+        "daily application limit",
+        "daily easy apply limit"
+    ]
+    if any(k in combined_alert_text for k in limit_keywords):
+        print("\n" + "=" * 65)
+        print("  [!] LINKEDIN DAILY EASY APPLY LIMIT REACHED!")
+        print("  [!] LinkedIn stated: 'You reached today’s Easy Apply limit.'")
+        print("  [!] All available submissions for today have been completed.")
+        print("  [!] Halting automation immediately per Rule 2.5 to protect account standing.")
+        print("=" * 65 + "\n")
+        alert("LinkedIn Daily Limit", "You reached today’s Easy Apply limit on LinkedIn. Automation halted safely.")
+        try:
+            got_it = modal.query_selector("button:has-text('Got it'), button[aria-label='Dismiss']")
+            if got_it:
+                got_it.click()
+        except Exception:
+            pass
+        raise RuntimeError("LINKEDIN_DAILY_LIMIT_REACHED")
+
     review_clicked = False
+    last_step_sig = ""
+    last_unfilled_sig = None
+    stuck_count = 0
 
     for step in range(15):
         time.sleep(1.5)
         print(f"  [*] Modal step {step + 1}…")
+
+        current_step_sig = page.evaluate("""() => {
+            const m = document.querySelector("dialog[data-testid='dialog'], [data-sdui-screen*='EasyApply'], [role='dialog'], .jobs-easy-apply-modal, .artdeco-modal");
+            return m ? m.innerText.replace(/\\s+/g, ' ').trim() : '';
+        }""")
+
+        norm_step = current_step_sig.replace("’", "'").lower()
+        if any(k in norm_step for k in limit_keywords):
+            print("\n" + "=" * 65)
+            print("  [!] LINKEDIN DAILY EASY APPLY LIMIT REACHED (detected in modal step)!")
+            print("  [!] Halting automation immediately per Rule 2.5 to protect account standing.")
+            print("=" * 65 + "\n")
+            alert("LinkedIn Daily Limit", "You reached today’s Easy Apply limit on LinkedIn. Automation halted safely.")
+            try:
+                got_it = modal.query_selector("button:has-text('Got it'), button[aria-label='Dismiss']")
+                if got_it:
+                    got_it.click()
+            except Exception:
+                pass
+            raise RuntimeError("LINKEDIN_DAILY_LIMIT_REACHED")
+
+        if last_step_sig and current_step_sig == last_step_sig:
+            stuck_count += 1
+            print(f"  [!] Modal remained on step after click (attempt {stuck_count}). Checking for missing answers / errors…")
+        else:
+            stuck_count = 0
+            last_unfilled_sig = None
+
+            # Try saving inner card first
+            inner_save = _find_modal_btn(
+                page,
+                "dialog[data-testid='dialog'] button:has-text('Save')",
+                "[data-sdui-screen*='EasyApply'] button:has-text('Save')",
+                ".jobs-easy-apply-modal button:has-text('Save')",
+                "[role='dialog'] button:has-text('Save')"
+            )
+            if inner_save:
+                print("  [+] Inner Save button detected, attempting to save card...")
+                try:
+                    inner_save.click(timeout=2000)
+                except Exception:
+                    page.evaluate("(el) => el.click()", inner_save)
+                time.sleep(1.5)
+
+            # Inspect unfilled fields or error messages with SDUI radio support
+            unfilled = page.evaluate("""() => {
+                const modal = document.querySelector("dialog[data-testid='dialog'], [data-sdui-screen*='EasyApply'], [role='dialog'], .jobs-easy-apply-modal, .artdeco-modal");
+                if (!modal) return [];
+                const res = [];
+                const seenRadioNames = new Set();
+
+                for (const el of modal.querySelectorAll("input, select, textarea")) {
+                    if (el.offsetParent === null) continue;
+                    const tag = el.tagName.toLowerCase();
+                    const type = (el.getAttribute("type") || tag).toLowerCase();
+                    if (type === "hidden" || type === "file") continue;
+                    
+                    let isUnfilled = false;
+                    let opts = [];
+                    if (type === "radio") {
+                        const name = el.getAttribute("name") || el.id;
+                        if (seenRadioNames.has(name)) continue;
+                        seenRadioNames.add(name);
+
+                        // Check if ANY radio in this group is checked
+                        const groupChecked = el.name ? !!modal.querySelector(`input[type='radio'][name='${el.name}']:checked`) : el.checked;
+                        if (groupChecked) continue;
+
+                        isUnfilled = true;
+                        const radios = el.name ? Array.from(modal.querySelectorAll(`input[type='radio'][name='${el.name}']`)) : [el];
+                        opts = radios.map(r => {
+                            let optText = "";
+                            let p = r.parentElement;
+                            for (let i = 0; i < 3 && p; i++) {
+                                const t = (p.innerText || "").trim();
+                                if (t && t !== r.getAttribute("aria-label")) { optText = t; break; }
+                                p = p.parentElement;
+                            }
+                            return (optText || r.value || "").trim();
+                        }).filter(Boolean);
+                    } else if (type === "checkbox") {
+                        if (!el.checked && (el.required || el.getAttribute("aria-required") === "true")) {
+                            isUnfilled = true;
+                        }
+                    } else if (tag === "select") {
+                        if (!el.value || el.value.toLowerCase() === "select an option") {
+                            isUnfilled = true;
+                            opts = Array.from(el.options).map(o => o.text.trim()).filter(t => t && !t.toLowerCase().includes("select"));
+                        }
+                    } else {
+                        if (!el.value.trim() && (el.required || el.getAttribute("aria-required") === "true")) {
+                            isUnfilled = true;
+                        }
+                    }
+                    
+                    if (isUnfilled) {
+                        let lbl = "";
+                        if (el.id) {
+                            const l = modal.querySelector(`label[for="${el.id}"]`);
+                            if (l) lbl = l.innerText.trim();
+                        }
+                        if (!lbl) lbl = el.getAttribute("aria-label") || "";
+                        if (!lbl) {
+                            const p = el.closest(".fb-dash-form-element, fieldset, label, div");
+                            lbl = p ? (p.querySelector("label, legend, span, p")?.innerText || "") : "";
+                        }
+                        res.push({tag, type, id: el.id, name: el.name || "", label: lbl.trim(), options: opts});
+                    }
+                }
+                return res;
+            }""")
+
+            unfilled_sig = tuple(sorted(f"{uf.get('type')}:{uf.get('id')}:{uf.get('label')}" for uf in unfilled))
+            is_deadlocked = bool(unfilled_sig and unfilled_sig == last_unfilled_sig)
+            last_unfilled_sig = unfilled_sig
+            if is_deadlocked:
+                print("  [!] Form deadlock detected: required questions remain unchanged across consecutive passes.")
+
+            for uf in unfilled:
+                q_lbl = uf.get("label") or uf.get("id") or "Screening question"
+                q_type = uf.get("type", "text")
+                q_opts = uf.get("options", [])
+
+                # Check cache first before bothering user
+                cached_ans = _QA_CACHE.get(q_lbl) or _QA_CACHE.get(q_lbl.lower())
+                if not cached_ans:
+                    from core.qa_semantics_engine import QASemanticsEngine
+                    cached_ans = QASemanticsEngine.match_question(q_lbl, field_type=q_type, options=q_opts)
+                if not cached_ans or cached_ans == "N/A":
+                    val = ask_user_for_answer(q_lbl, field_type=q_type, options=q_opts)
+                else:
+                    val = cached_ans
+
+                if val and val != "N/A":
+                    try:
+                        if q_type in ("text", "number", "tel", "url", "textarea", "date") and uf.get("id"):
+                            el = page.query_selector(f"#{uf['id']}")
+                            if el:
+                                el.fill(val)
+                        elif q_type == "select" and uf.get("id"):
+                            el = page.query_selector(f"#{uf['id']}")
+                            if el:
+                                for opt in el.query_selector_all("option"):
+                                    if val.lower() in opt.inner_text().strip().lower():
+                                        el.select_option(value=opt.get_attribute("value"))
+                                        el.dispatch_event("change")
+                                        break
+                        elif q_type == "radio":
+                            # Atomic radio selection by name or id
+                            r_name = uf.get("name")
+                            r_id = uf.get("id")
+                            page.evaluate("""([targetName, targetId, answer]) => {
+                                const ansLower = answer.trim().toLowerCase();
+                                const radios = targetName
+                                    ? Array.from(document.querySelectorAll(`input[type='radio'][name='${targetName}']`))
+                                    : (targetId ? [document.getElementById(targetId)] : []);
+                                for (const r of radios) {
+                                    if (!r) continue;
+                                    let optText = "";
+                                    let p = r.parentElement;
+                                    for (let i = 0; i < 3 && p; i++) {
+                                        const t = (p.innerText || "").trim();
+                                        if (t && t !== r.getAttribute("aria-label")) { optText = t; break; }
+                                        p = p.parentElement;
+                                    }
+                                    const lbl = (optText || r.value || "").trim().toLowerCase();
+                                    if (lbl === ansLower || (ansLower.length > 2 && lbl.includes(ansLower)) || (lbl.length > 2 && ansLower.includes(lbl))) {
+                                        let parent = r.parentElement;
+                                        for (let i = 0; i < 2 && parent; i++) {
+                                            parent.click();
+                                            parent = parent.parentElement;
+                                        }
+                                        r.click();
+                                        r.checked = true;
+                                        r.dispatchEvent(new Event('input', { bubbles: true }));
+                                        r.dispatchEvent(new Event('change', { bubbles: true }));
+                                        break;
+                                    }
+                                }
+                            }""", [r_name, r_id, val])
+                    except Exception as fe:
+                        pass
+
+            if stuck_count >= 3 or (stuck_count >= 2 and is_deadlocked):
+                print("\n" + "=" * 65)
+                print("  [!] Form cannot advance automatically (stall/deadlock detected).")
+                print("  [!] Leaving form modal open on display for candidate review.")
+                print("  [!] Application modal is NOT dismissed per user instruction.")
+                print("=" * 65 + "\n")
+                alert("Application Paused", "Application paused for review. Modal is open on screen.")
+                return False
+
+        last_step_sig = current_step_sig
 
         # ── Resume verification and upload (Token-Lean & Duplicate Prevention) ──
         if RESUME_PATH and RESUME_PATH.exists():
@@ -740,7 +1244,7 @@ def apply_to_current_job(page: Page, review_only: bool = False) -> bool:
 
             # Cross-verify if CV matching our latest tool CV is already present / selected
             cv_already_selected = page.evaluate("""([targetName, targetStem]) => {
-                const modal = document.querySelector('.jobs-easy-apply-modal');
+                const modal = document.querySelector("dialog[data-testid='dialog'], [data-sdui-screen*='EasyApply'], [role='dialog'], .jobs-easy-apply-modal, .artdeco-modal");
                 if (!modal) return false;
 
                 // 1. Check existing file name elements
@@ -789,31 +1293,47 @@ def apply_to_current_job(page: Page, review_only: bool = False) -> bool:
             if cv_already_selected:
                 print(f"  [CV Check] Latest CV '{RESUME_PATH.name}' is already attached and selected. Skipping re-upload.")
             else:
-                file_input = page.query_selector(".jobs-easy-apply-modal input[type='file']")
-                if file_input:
+                # Disambiguate file inputs: target resume upload specifically (avoid cover letter)
+                resume_input = None
+                for inp in page.query_selector_all("dialog[data-testid='dialog'] input[type='file'], [data-sdui-screen*='EasyApply'] input[type='file'], [role='dialog'] input[type='file'], .jobs-easy-apply-modal input[type='file']"):
+                    inp_id = (inp.get_attribute("id") or "").lower()
+                    lbl = inp.evaluate("el => el.closest('label, .fb-dash-form-element, div')?.innerText || ''").lower()
+                    if "cover" not in inp_id and "cover letter" not in lbl:
+                        resume_input = inp
+                        break
+                if resume_input:
                     try:
-                        file_input.set_input_files(str(RESUME_PATH))
+                        resume_input.set_input_files(str(RESUME_PATH))
                         print(f"  [+] Uploaded Master CV: {RESUME_PATH.name}")
                         time.sleep(2)
                     except Exception as e:
                         print(f"  [!] Upload note: {e}")
 
-        # ---- Upload Cover Letter if field exists ----
-        cover_letter_path = Path(ROOT_DIR) / "user_inputs" / "cover_letter.txt"
+        # ---- Upload Cover Letter if field exists (Multi-document routing) ----
+        cover_candidates = sorted(
+            [p for d in ("cover_letters", "user_inputs") for p in Path(d).glob("cover*") if p.suffix.lower() in (".pdf", ".docx", ".txt")],
+            key=lambda x: x.stat().st_mtime, reverse=True
+        )
+        cover_letter_path = cover_candidates[0] if cover_candidates else Path(ROOT_DIR) / "user_inputs" / "cover_letter.txt"
         if not cover_letter_path.exists():
-            # generate a simple placeholder cover letter
             cover_letter_path.write_text(
                 f"Dear Hiring Team,\n\nI am excited to apply for this role. My background in {os.getenv('CANDIDATE_PRIMARY_SKILLS', 'Data Engineering and Analytics')} aligns well with the position.\n\nThank you for your consideration.\n\nBest regards,\n{os.getenv('CANDIDATE_NAME', 'Ankit Kumar Singh')}"
             )
-        # Find file input elements again and look for one labeled cover letter
+        # Find file input elements specifically labeled for cover letter
         cover_input = None
-        for inp in page.query_selector_all(".jobs-easy-apply-modal input[type='file']"):
-            lbl = inp.evaluate("el => el.closest('label')?.innerText || ''")
-            if lbl and 'cover letter' in lbl.lower():
+        for inp in page.query_selector_all("dialog[data-testid='dialog'] input[type='file'], [data-sdui-screen*='EasyApply'] input[type='file'], [role='dialog'] input[type='file'], .jobs-easy-apply-modal input[type='file']"):
+            inp_id = (inp.get_attribute("id") or "").lower()
+            lbl = inp.evaluate("el => el.closest('label, .fb-dash-form-element, div')?.innerText || ''").lower()
+            if "cover" in inp_id or "cover letter" in lbl:
                 cover_input = inp
                 break
         if cover_input:
-            already_cov = page.query_selector(".jobs-easy-apply-modal .jobs-document-upload__file-name")
+            already_cov = page.evaluate("""() => {
+                const modal = document.querySelector("dialog[data-testid='dialog'], [data-sdui-screen*='EasyApply'], [role='dialog'], .jobs-easy-apply-modal, .artdeco-modal");
+                if (!modal) return false;
+                const txt = modal.innerText.toLowerCase();
+                return txt.includes('cover_letter') || txt.includes('cover letter uploaded');
+            }""")
             if not already_cov:
                 try:
                     cover_input.set_input_files(str(cover_letter_path))
@@ -835,7 +1355,13 @@ def apply_to_current_job(page: Page, review_only: bool = False) -> bool:
             pass
 
         # ── Inner Save (experience or education card) ─────────────────────
-        save_btn = _find_modal_btn(page, ".jobs-easy-apply-modal button:has-text('Save')")
+        save_btn = _find_modal_btn(
+            page,
+            "dialog[data-testid='dialog'] button:has-text('Save')",
+            "[data-sdui-screen*='EasyApply'] button:has-text('Save')",
+            ".jobs-easy-apply-modal button:has-text('Save')",
+            "[role='dialog'] button:has-text('Save')"
+        )
         if save_btn:
             print("  [+] Inner Save button detected, saving card...")
             try:
@@ -846,9 +1372,9 @@ def apply_to_current_job(page: Page, review_only: bool = False) -> bool:
 
         # ── Evaluate Primary Action in Modal Footer ───────────────────────
         action = page.evaluate("""() => {
-            const modal = document.querySelector('.jobs-easy-apply-modal');
+            const modal = document.querySelector("dialog[data-testid='dialog'], [data-sdui-screen*='EasyApply'], [role='dialog'], .jobs-easy-apply-modal, .artdeco-modal");
             if (!modal) return null;
-            const btns = Array.from(modal.querySelectorAll('footer button, button'));
+            const btns = Array.from(modal.querySelectorAll('footer button, [data-testid="dialog-footer"] button, button'));
             
             // 1. Submit
             const submitBtn = btns.find(b => {
@@ -882,7 +1408,19 @@ def apply_to_current_job(page: Page, review_only: bool = False) -> bool:
                 return True
             print("  [✓] Submitting application…")
             page.evaluate("""() => {
-                const modal = document.querySelector('.jobs-easy-apply-modal');
+                const modal = document.querySelector("dialog[data-testid='dialog'], [data-sdui-screen*='EasyApply'], [role='dialog'], .jobs-easy-apply-modal, .artdeco-modal");
+                // Uncheck 'Follow company' if present to keep candidate feed clean
+                try {
+                    const followCbs = (modal || document).querySelectorAll('input[type="checkbox"][id*="follow-company"], input[type="checkbox"][name*="follow-company"]');
+                    for (const fcb of followCbs) {
+                        if (fcb && fcb.checked) {
+                            const l = fcb.closest('label');
+                            if (l) l.click();
+                            else fcb.click();
+                        }
+                    }
+                } catch (e) {}
+
                 const btns = Array.from((modal || document).querySelectorAll('button'));
                 const btn = btns.find(b => {
                     const t = (b.innerText + ' ' + (b.getAttribute('aria-label') || '')).toLowerCase();
@@ -893,7 +1431,7 @@ def apply_to_current_job(page: Page, review_only: bool = False) -> bool:
             time.sleep(3)
             try:
                 page.evaluate("""() => {
-                    const dismiss = document.querySelector('[role="dialog"] button[aria-label="Dismiss"], [role="dialog"] .artdeco-modal__dismiss, button[aria-label="Dismiss"]');
+                    const dismiss = document.querySelector('[role="dialog"] button[aria-label*="Dismiss" i], dialog[data-testid="dialog"] button[aria-label*="Dismiss" i], [role="dialog"] .artdeco-modal__dismiss, button[aria-label="Dismiss"], button[aria-label="Close"]');
                     if (dismiss) dismiss.click();
                     const notNow = Array.from(document.querySelectorAll('button')).find(b => b.innerText.trim().toLowerCase() === 'not now');
                     if (notNow) notNow.click();
@@ -905,7 +1443,7 @@ def apply_to_current_job(page: Page, review_only: bool = False) -> bool:
         if action == "next":
             print("  [→] Next…")
             page.evaluate("""() => {
-                const modal = document.querySelector('.jobs-easy-apply-modal');
+                const modal = document.querySelector("dialog[data-testid='dialog'], [data-sdui-screen*='EasyApply'], [role='dialog'], .jobs-easy-apply-modal, .artdeco-modal");
                 const btns = Array.from((modal || document).querySelectorAll('button'));
                 const btn = btns.find(b => {
                     const t = (b.innerText + ' ' + (b.getAttribute('aria-label') || '')).toLowerCase();
@@ -919,14 +1457,14 @@ def apply_to_current_job(page: Page, review_only: bool = False) -> bool:
         if action == "review":
             print("  [→] Review…")
             page.evaluate("""() => {
-                const modal = document.querySelector('.jobs-easy-apply-modal');
+                const modal = document.querySelector("dialog[data-testid='dialog'], [data-sdui-screen*='EasyApply'], [role='dialog'], .jobs-easy-apply-modal, .artdeco-modal");
                 const btns = Array.from((modal || document).querySelectorAll('button'));
                 const btn = btns.find(b => {
                     const t = (b.innerText + ' ' + (b.getAttribute('aria-label') || '')).toLowerCase();
                     return t.includes('review your application') || t.includes('review');
                 });
                 if (btn) btn.click();
-                const content = (modal || document).querySelector('.jobs-easy-apply-modal__content, .artdeco-modal__content');
+                const content = (modal || document).querySelector('.jobs-easy-apply-modal__content, .artdeco-modal__content, [data-test-easy-apply-scrollable]');
                 if (content) content.scrollTop = content.scrollHeight;
             }""")
             review_clicked = True
@@ -938,11 +1476,24 @@ def apply_to_current_job(page: Page, review_only: bool = False) -> bool:
                 return True
             # Check if submit is now available after review transition/scroll
             submit_after_review = page.evaluate("""() => {
-                const modal = document.querySelector('.jobs-easy-apply-modal');
+                const modal = document.querySelector("dialog[data-testid='dialog'], [data-sdui-screen*='EasyApply'], [role='dialog'], .jobs-easy-apply-modal, .artdeco-modal");
                 if (!modal) return false;
-                const content = modal.querySelector('.jobs-easy-apply-modal__content, .artdeco-modal__content');
+                const content = modal.querySelector('.jobs-easy-apply-modal__content, .artdeco-modal__content, [data-test-easy-apply-scrollable]');
                 if (content) content.scrollTop = content.scrollHeight;
-                const btns = Array.from(modal.querySelectorAll('footer button, button'));
+
+                // Uncheck 'Follow company' if present
+                try {
+                    const followCbs = modal.querySelectorAll('input[type="checkbox"][id*="follow-company"], input[type="checkbox"][name*="follow-company"]');
+                    for (const fcb of followCbs) {
+                        if (fcb && fcb.checked) {
+                            const l = fcb.closest('label');
+                            if (l) l.click();
+                            else fcb.click();
+                        }
+                    }
+                } catch (e) {}
+
+                const btns = Array.from(modal.querySelectorAll('footer button, [data-testid="dialog-footer"] button, button'));
                 const submitBtn = btns.find(b => {
                     const t = (b.innerText + ' ' + (b.getAttribute('aria-label') || '')).toLowerCase();
                     return (t.includes('submit application') || t.includes('submit')) && b.offsetParent !== null && !b.disabled;
@@ -958,7 +1509,7 @@ def apply_to_current_job(page: Page, review_only: bool = False) -> bool:
                 time.sleep(3)
                 try:
                     page.evaluate("""() => {
-                        const dismiss = document.querySelector('[role="dialog"] button[aria-label="Dismiss"], [role="dialog"] .artdeco-modal__dismiss, button[aria-label="Dismiss"]');
+                        const dismiss = document.querySelector('[role="dialog"] button[aria-label*="Dismiss" i], dialog[data-testid="dialog"] button[aria-label*="Dismiss" i], [role="dialog"] .artdeco-modal__dismiss, button[aria-label="Dismiss"], button[aria-label="Close"]');
                         if (dismiss) dismiss.click();
                         const notNow = Array.from(document.querySelectorAll('button')).find(b => b.innerText.trim().toLowerCase() === 'not now');
                         if (notNow) notNow.click();
@@ -972,7 +1523,7 @@ def apply_to_current_job(page: Page, review_only: bool = False) -> bool:
         errors = [
             e.inner_text().strip()
             for e in page.query_selector_all(
-                ".jobs-easy-apply-modal .artdeco-inline-feedback--error"
+                "dialog[data-testid='dialog'] .artdeco-inline-feedback--error, [data-sdui-screen*='EasyApply'] .artdeco-inline-feedback--error, [role='dialog'] .artdeco-inline-feedback--error, .jobs-easy-apply-modal .artdeco-inline-feedback--error, [data-test-form-element-error-message]"
             )
             if e.is_visible()
         ]
@@ -982,8 +1533,9 @@ def apply_to_current_job(page: Page, review_only: bool = False) -> bool:
             print("  [?] No actionable button found – bailing.")
         break
 
-    # Dismiss without submitting
-    clear_all_overlays(page)
+    # Under NO circumstances close or discard the modal!
+    print("  [!] Application paused. Modal remains open on display for candidate review.")
+    alert("Application Paused", "Application modal left open on your display.")
     return False
 
 
@@ -1122,11 +1674,22 @@ def ensure_authenticated(page: Page):
 
 # ── Main Runner ───────────────────────────────────────────────────────────────
 
-SKIP_KEYWORDS = [
-    "java", "kubernetes", "ios developer", "android developer",
-    "spring boot", "docker", ".net", "vice president", "vp -",
-    "intern", "internship", "trainee", "apprentice",
+DEFAULT_COMPANY_BLACKLIST = [
+    "turing", "cybercoders", "robert half", "teksystems", "apex systems",
+    "actalent", "collabera", "kforce", "jobot", "recruitment agency",
+    "staffing", "talentship", "talent corner", "hays", "adecco",
+    "randstad", "allegis group", "kelly services", "manpower"
 ]
+
+DEFAULT_TITLE_BLACKLIST = [
+    "intern", "internship", "trainee", "apprentice",
+    "principal", "director", "vp", "vice president",
+    "head of", "chief", "architect",
+    "java", "kubernetes", "ios developer", "android developer",
+    "spring boot", "docker", ".net"
+]
+
+SKIP_KEYWORDS = DEFAULT_TITLE_BLACKLIST
 
 def run(
     target: int = 40,
@@ -1135,6 +1698,10 @@ def run(
     locations: Optional[List[str]] = None,
     sort: str = "DD",
     time_filter: Optional[str] = "r86400",
+    experience_level: Optional[str] = "3,4",
+    max_yoe_ceiling: int = 8,
+    company_blacklist: Optional[List[str]] = None,
+    title_blacklist: Optional[List[str]] = None,
     keep_open: bool = True,
     override_daily_limit: bool = False,
     review_only: bool = False,
@@ -1142,6 +1709,18 @@ def run(
 ):
     global RESUME_PATH
     load_env()
+
+    active_company_blacklist = set(c.lower() for c in DEFAULT_COMPANY_BLACKLIST)
+    if company_blacklist:
+        for c in company_blacklist:
+            if c and c.strip():
+                active_company_blacklist.add(c.strip().lower())
+
+    active_title_blacklist = set(t.lower() for t in DEFAULT_TITLE_BLACKLIST)
+    if title_blacklist:
+        for t in title_blacklist:
+            if t and t.strip():
+                active_title_blacklist.add(t.strip().lower())
 
     # Resolve latest master resume
     candidates = sorted(
@@ -1156,7 +1735,9 @@ def run(
     tpr_param = ""
     if time_filter:
         tf_clean = time_filter.strip().lower()
-        if tf_clean in ("24h", "1d", "86400", "r86400"):
+        if tf_clean in ("none", "all", "off", "any", ""):
+            tpr_param = ""
+        elif tf_clean in ("24h", "1d", "86400", "r86400"):
             tpr_param = "&f_TPR=r86400"
         elif tf_clean in ("week", "7d", "r604800"):
             tpr_param = "&f_TPR=r604800"
@@ -1198,6 +1779,11 @@ def run(
     for idx, q in enumerate(queries_to_scan, 1):
         print(f"      [{idx}] {q}")
     print(f"  • Filter: Easy Apply (f_AL=true)")
+    exp_display = f"&f_E={experience_level}" if (experience_level and experience_level.lower() not in ("all", "none", "")) else "All levels"
+    print(f"  • Experience Level Filter: {exp_display}")
+    print(f"  • Company Blacklist: {len(active_company_blacklist)} rules active")
+    print(f"  • Title Blacklist: {len(active_title_blacklist)} rules active")
+    print(f"  • Max YOE Ceiling: {max_yoe_ceiling} years (Candidate: 4.8 YOE)")
     print(f"  • Sorting: Date Descending / Newest to Oldest (sortBy={sort})")
     print(f"  • Recency Filter: {tpr_param or 'None (All time)'}")
     print(f"  • Target Applications: {target}")
@@ -1279,6 +1865,7 @@ def run(
             encoded_loc = urllib.parse.quote(canonical_loc)
             geo_param = f"&geoId={geo_id}" if geo_id else ""
             wt_param = "&f_WT=1%2C3" if no_remote else ""
+            f_e_param = f"&f_E={urllib.parse.quote(experience_level)}" if (experience_level and experience_level.lower() not in ("all", "none", "")) else ""
             search_url = (
                 f"https://www.linkedin.com/jobs/search/?"
                 f"keywords={encoded_kw}"
@@ -1286,22 +1873,30 @@ def run(
                 f"{geo_param}"
                 f"&f_AL=true"
                 f"{wt_param}"
+                f"{f_e_param}"
                 f"&sortBy={sort}"
                 f"{tpr_param}"
             )
 
             current_url = page.url
             page_num = 1
-            if "linkedin.com/jobs/search" in current_url and ("keywords=" in current_url or "f_AL=" in current_url):
+            matches_active = False
+            if ("linkedin.com/jobs/search" in current_url or "linkedin.com/jobs/search-results" in current_url) and ("keywords=" in current_url or "f_AL=" in current_url):
                 parsed_u = urllib.parse.urlparse(current_url)
                 params = urllib.parse.parse_qs(parsed_u.query)
-                start_val = int(params.get("start", ["0"])[0])
-                if start_val > 0:
-                    page_num = (start_val // 25) + 1
-                    print(f"[Resume Detection] Continuing directly from active search page at start={start_val} (Page {page_num})")
-                else:
-                    print(f"[Resume Detection] Continuing directly from active LinkedIn jobs search page.")
-            else:
+                active_kw = params.get("keywords", [""])[0].lower()
+                active_loc = params.get("location", [""])[0].lower()
+                active_geoid = params.get("geoId", [""])[0]
+                if (kw.lower() in active_kw or active_kw == kw.lower()) and ("india" in active_loc or (geo_id and active_geoid == str(geo_id))):
+                    matches_active = True
+                    start_val = int(params.get("start", ["0"])[0])
+                    if start_val > 0:
+                        page_num = (start_val // 25) + 1
+                        print(f"[Resume Detection] Continuing directly from active search page at start={start_val} (Page {page_num})")
+                    else:
+                        print(f"[Resume Detection] Continuing directly from active LinkedIn jobs search page.")
+
+            if not matches_active:
                 print(f"\n[Search URL] {search_url}")
                 try:
                     page.goto(search_url, wait_until="domcontentloaded")
@@ -1356,6 +1951,183 @@ def run(
                             job_ids.append(jid)
 
                 if not job_ids:
+                    # Check for modern LinkedIn LazyColumn layout
+                    try:
+                        lazy_cards = page.query_selector_all("[data-component-type='LazyColumn'] > div, [data-testid='lazy-column'] > div")
+                    except Exception:
+                        page.wait_for_timeout(1500)
+                        try:
+                            lazy_cards = page.query_selector_all("[data-component-type='LazyColumn'] > div, [data-testid='lazy-column'] > div")
+                        except Exception:
+                            lazy_cards = []
+                    if lazy_cards:
+                        print(f"[Scan:Modern] Found {len(lazy_cards)} items in modern LazyColumn layout.")
+                        for card_idx, card_el in enumerate(lazy_cards):
+                            if applied >= target:
+                                break
+                            if not override_daily_limit and (today_applied + applied) >= DAILY_EASY_APPLY_LIMIT:
+                                print(f"\n[Safety Gate] Reached daily safety ceiling of {DAILY_EASY_APPLY_LIMIT} Easy Apply applications today.")
+                                alert("Easy Apply Daily Limit", f"Completed {DAILY_EASY_APPLY_LIMIT} applications today. Pausing safely.")
+                                applied = target
+                                break
+
+                            card_text = (card_el.inner_text() or "").strip()
+                            if "easy apply" not in card_text.lower() or "all filters" in card_text.lower():
+                                continue
+
+                            lines = [l.strip() for l in card_text.split("\n") if l.strip()]
+                            if not lines:
+                                continue
+
+                            c_title = lines[0]
+                            if c_title.startswith("Selected,") or "(Verified" in c_title:
+                                c_title = lines[1] if len(lines) > 1 else c_title
+                            c_company = lines[2] if len(lines) > 2 else (lines[1] if len(lines) > 1 else "")
+                            c_loc = lines[3] if len(lines) > 3 else (lines[2] if len(lines) > 2 else "")
+                            c_work_model = next((l for l in lines if re.search(r"remote|on-site|onsite|hybrid", l, re.IGNORECASE)), "")
+
+                            # Strict no-remote check
+                            if no_remote and (re.search(r"\bremote\b|work from home|\bwfh\b", f"{c_title} {c_loc} {c_work_model}", re.IGNORECASE)):
+                                print(f"  [-] Skipped remote job: '{c_title}' ({c_work_model or c_loc})")
+                                continue
+
+                            # Location check (must be India)
+                            combined_loc = f"{c_loc} {c_work_model}".lower()
+                            if combined_loc and "india" not in combined_loc and not any(city in combined_loc for city in ["delhi", "noida", "gurugram", "gurgaon", "bengaluru", "bangalore", "mumbai", "pune", "hyderabad", "chennai", "kolkata", "ahmedabad", "chandigarh", "kochi", "kanpur"]):
+                                print(f"  [-] Skipped non-India location: '{c_loc}'")
+                                continue
+
+                            # Pre-click Company Blacklist Check
+                            if any(b_comp in c_company.lower() for b_comp in active_company_blacklist):
+                                print(f"  [-] Skipped blacklisted company: '{c_company}'")
+                                continue
+
+                            # Pre-click Title Blacklist Check
+                            if any(bad in c_title.lower() for bad in active_title_blacklist):
+                                print(f"  [-] Skipped blacklisted title: '{c_title}'")
+                                continue
+
+                            # Title filter: ensure role matches keywords if explicit query provided
+                            if kw != "auto" and not any(term in c_title.lower() for term in [
+                                "analyst", "analytics", "data", "business", "consultant", "scientist",
+                                "engineer", "governance", "bi", "reporting", "etl", "sql", "ai", "llm"
+                            ]):
+                                print(f"  [-] Skipped non-matching title: '{c_title}'")
+                                continue
+
+                            # Click card to load details into right pane
+                            try:
+                                card_btn = card_el.query_selector("div[role='button']") or card_el
+                                card_btn.scroll_into_view_if_needed()
+                                time.sleep(0.15)
+                                page.evaluate("(el) => el.click()", card_btn)
+                                time.sleep(1.5)
+                            except Exception as ce:
+                                try:
+                                    card_btn.click(timeout=1000)
+                                except Exception:
+                                    print(f"  [!] Card click note: {ce}")
+                                    continue
+
+                            # Extract Job ID from page URL
+                            m_jid = re.search(r"currentJobId=(\d+)", page.url)
+                            card_jid = m_jid.group(1) if m_jid else f"card_{card_idx}"
+
+                            if card_jid in applied_urls or f"https://www.linkedin.com/jobs/view/{card_jid}/" in applied_urls:
+                                print(f"  [-] Job {card_jid} ({c_title}) already applied previously. Skipping.")
+                                continue
+
+                            # Ensure active page is valid and open
+                            if page.is_closed():
+                                active_pages = [p for p in context.pages if not p.is_closed()]
+                                if active_pages:
+                                    page = active_pages[-1]
+                                else:
+                                    print("  [!] Browser page was closed. Reopening jobs page...")
+                                    page = context.new_page()
+                                    page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
+                                    time.sleep(2.0)
+                                    break
+
+                            # Read full details from right pane if available
+                            try:
+                                t_el = page.query_selector("a[href*='/jobs/view/'], .job-details-jobs-unified-top-card__job-title, .jobs-unified-top-card__job-title, h1, h2")
+                                c_el = page.query_selector("a[href*='/company/'], .job-details-jobs-unified-top-card__company-name, .jobs-unified-top-card__company-name")
+                                det_title = t_el.inner_text().strip() if t_el and t_el.inner_text().strip() not in ("0 notifications", "Jobs filters") else c_title
+                                det_company = c_el.inner_text().strip() if c_el else c_company
+                            except Exception as pe:
+                                print(f"  [!] Card detail inspection note ({pe}). Recovering...")
+                                active_pages = [p for p in context.pages if not p.is_closed()]
+                                if active_pages:
+                                    page = active_pages[-1]
+                                continue
+
+                            # Detailed Pane Company & Title Blacklist Check
+                            if any(b_comp in det_company.lower() for b_comp in active_company_blacklist):
+                                print(f"  [-] Skipped blacklisted company (detail): '{det_company}'")
+                                continue
+                            if any(b_tit in det_title.lower() for b_tit in active_title_blacklist):
+                                print(f"  [-] Skipped blacklisted title (detail): '{det_title}'")
+                                continue
+
+                            # Seniority YOE ceiling check (Candidate has 4.8 YOE; default ceiling 8 YOE)
+                            jd_el = page.query_selector(".jobs-description__content, .jobs-box__html-content, #job-details, .jobs-description")
+                            if jd_el:
+                                jd_text = (jd_el.inner_text() or "").strip()
+                                min_yoe = extract_min_yoe_requirement(jd_text)
+                                if min_yoe and min_yoe > max_yoe_ceiling:
+                                    print(f"  [-] Skipped senior role: requires {min_yoe}+ YOE > ceiling of {max_yoe_ceiling} YOE. (Role: {det_title})")
+                                    record_failed_application(det_company, det_title, f"https://www.linkedin.com/jobs/view/{card_jid}/", "Seniority Ceiling Exceeded", f"Requires {min_yoe}+ YOE")
+                                    continue
+
+                            print(f"\n→ [{applied+1}/{target}] {det_title} @ {det_company} ({c_work_model or c_loc or loc}) [ID: {card_jid}]")
+
+                            try:
+                                try:
+                            ok = apply_to_current_job(page, review_only=review_only)
+                        except RuntimeError as re_err:
+                            if "LINKEDIN_DAILY_LIMIT_REACHED" in str(re_err):
+                                print("\n[!] Halting scan loop: LinkedIn account daily Easy Apply quota reached for today.")
+                                return
+                            raise
+                            except RuntimeError as re_err:
+                                if "LINKEDIN_DAILY_LIMIT_REACHED" in str(re_err):
+                                    print("\n[!] Halting scan loop: LinkedIn account daily Easy Apply quota reached for today.")
+                                    return
+                                raise
+                            if ok:
+                                if review_only:
+                                    applied += 1
+                                    print(f"  [Review Mode] Application populated for review: {det_title} @ {det_company}")
+                                    alert("Application Ready for Review", f"Review ready for {det_title} @ {det_company}")
+                                    break
+                                applied += 1
+                                applied_urls.add(card_jid)
+                                applied_urls.add(f"https://www.linkedin.com/jobs/view/{card_jid}/")
+                                print(f"  [✓] Successfully Applied! Progress: {applied}/{target}")
+                                try:
+                                    record_application(
+                                        company=det_company,
+                                        role=det_title,
+                                        job_url=f"https://www.linkedin.com/jobs/view/{card_jid}/",
+                                        cv_path=str(RESUME_PATH.relative_to(ROOT_DIR)) if RESUME_PATH else "cv/Ankit_Resume_v4.pdf"
+                                    )
+                                except Exception as le:
+                                    print(f"  [Tracker Note] {le}")
+                            else:
+                                modal_open = page.query_selector("dialog[data-testid='dialog'], [data-sdui-screen*='EasyApply'], [role='dialog'], .jobs-easy-apply-modal, .artdeco-modal")
+                                if modal_open and modal_open.is_visible():
+                                    print("  [!] Form modal remains open on display for candidate inspection.")
+                                    alert("Form Paused on Screen", f"Modal open for {det_title} @ {det_company}. Please inspect.")
+                                    print("  [Action Required] Once inspected/submitted on screen, close modal to proceed to next job.")
+                                    for _ in range(150):  # wait up to 5 mins
+                                        time.sleep(2)
+                                        m_check = page.query_selector("dialog[data-testid='dialog'], [data-sdui-screen*='EasyApply'], [role='dialog'], .jobs-easy-apply-modal, .artdeco-modal")
+                                        if not m_check or not m_check.is_visible():
+                                            print("  [+] Modal dismissed/submitted by candidate. Resuming search scan.")
+                                            break
+
+                if not job_ids and not page.query_selector("[data-component-type='LazyColumn'], [data-testid='lazy-column']"):
                     print(f"  [Scan] No further job listings found for this query on page {page_num}.")
                     break
 
@@ -1438,12 +2210,33 @@ def run(
                         #     print(f"  [-] Skipped non-India location: '{job_loc}' (US/Michigan guard triggered).")
                         #     continue
 
-                        # Check technology exclusions
-                        if any(bad in title.lower() for bad in SKIP_KEYWORDS):
-                            print("  [-] Skipped due to exclusion rule (e.g. Java, DevOps, Internship).")
+                        # Check company blacklist
+                        if any(b_comp in company.lower() for b_comp in active_company_blacklist):
+                            print(f"  [-] Skipped blacklisted company: '{company}'")
                             continue
 
-                        ok = apply_to_current_job(page, review_only=review_only)
+                        # Check title blacklist
+                        if any(bad in title.lower() for bad in active_title_blacklist):
+                            print(f"  [-] Skipped blacklisted title: '{title}'")
+                            continue
+
+                        # Seniority YOE ceiling check
+                        jd_el = page.query_selector(".jobs-description__content, .jobs-box__html-content, #job-details, .jobs-description")
+                        if jd_el:
+                            jd_text = (jd_el.inner_text() or "").strip()
+                            min_yoe = extract_min_yoe_requirement(jd_text)
+                            if min_yoe and min_yoe > max_yoe_ceiling:
+                                print(f"  [-] Skipped senior role: requires {min_yoe}+ YOE > ceiling of {max_yoe_ceiling} YOE. (Role: {title})")
+                                record_failed_application(company, title, f"https://www.linkedin.com/jobs/view/{jid}/", "Seniority Ceiling Exceeded", f"Requires {min_yoe}+ YOE")
+                                continue
+
+                        try:
+                            ok = apply_to_current_job(page, review_only=review_only)
+                        except RuntimeError as re_err:
+                            if "LINKEDIN_DAILY_LIMIT_REACHED" in str(re_err):
+                                print("\n[!] Halting scan loop: LinkedIn account daily Easy Apply quota reached for today.")
+                                return
+                            raise
                         if ok:
                             if review_only:
                                 applied += 1
@@ -1541,12 +2334,16 @@ def run(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="LinkedIn Easy Apply Runner with OpenRouter Free")
     parser.add_argument("count", nargs="?", type=int, default=40, help="Number of applications (default: 40)")
-    parser.add_argument("-n", "--num", "--count", dest="count_flag", type=int, default=None, help="Number of applications (alias for count)")
+    parser.add_argument("-n", "--num", "--count", "--target", dest="count_flag", type=int, default=None, help="Number of applications (alias for count)")
     parser.add_argument("--keywords", "-k", nargs="*", default=["auto"], help="Designations search query or space/semicolon-separated queries (default: auto)")
     parser.add_argument("--location", "-l", type=str, default="Delhi NCR, India", help="Comma-separated location priority queue (India only, NCR prioritized)")
     parser.add_argument("--locations", type=str, default=None, help="Alias for comma-separated locations queue")
     parser.add_argument("--time-filter", "-t", type=str, default="r86400", help="Recency filter: r86400 / 24h (default: r86400)")
     parser.add_argument("--sort", "-s", type=str, default="DD", choices=["DD", "R"], help="DD = Date Descending (newest to old), R = Relevant")
+    parser.add_argument("--experience-level", "-e", type=str, default="3,4", help="LinkedIn experience levels: 1=Intern, 2=Entry, 3=Associate, 4=Mid-Senior, 5=Director, 6=Exec (default: 3,4)")
+    parser.add_argument("--max-yoe-ceiling", "--max-yoe", type=int, default=8, help="Maximum years of experience ceiling to apply (default: 8 YOE)")
+    parser.add_argument("--company-blacklist", type=str, default="", help="Comma-separated additional company names to skip")
+    parser.add_argument("--title-blacklist", type=str, default="", help="Comma-separated additional title keywords to skip")
     parser.add_argument("--no-keep-open", action="store_true", help="Do not keep browser loop active at end")
     parser.add_argument("--override-daily-limit", action="store_true", help="Bypass the daily Easy Apply safety limit of 40")
     parser.add_argument("--review-only", action="store_true", help="Populate the Easy Apply form and pause at review screen without clicking Submit")
@@ -1566,12 +2363,19 @@ if __name__ == "__main__":
     loc_str = args.locations or args.location
     locations_list = [loc.strip() for loc in loc_str.split(",") if loc.strip()]
 
+    extra_comps = [c.strip() for c in args.company_blacklist.split(",") if c.strip()] if args.company_blacklist else None
+    extra_titles = [t.strip() for t in args.title_blacklist.split(",") if t.strip()] if args.title_blacklist else None
+
     run(
         target=target_count,
         keywords=keywords_arg,
         locations=locations_list,
         sort=args.sort,
         time_filter=args.time_filter,
+        experience_level=args.experience_level,
+        max_yoe_ceiling=args.max_yoe_ceiling,
+        company_blacklist=extra_comps,
+        title_blacklist=extra_titles,
         keep_open=not args.no_keep_open,
         override_daily_limit=args.override_daily_limit,
         review_only=args.review_only,

@@ -8,6 +8,7 @@ Rule: Zero em dashes permitted.
 Uses standard library unittest.TestCase for full compatibility with GitHub CI unittest runner and pytest.
 """
 
+import re
 import unittest
 from unittest.mock import patch
 from core.qa_semantics_engine import QASemanticsEngine
@@ -24,6 +25,10 @@ class TestQASemanticsEngine(unittest.TestCase):
         self.assertEqual(QASemanticsEngine.match_question("Current CTC (in LPA)", field_type="text"), "18")
         self.assertEqual(QASemanticsEngine.match_question("Annual income in Lakhs", field_type="text"), "18")
 
+        # 3. Monthly format
+        self.assertEqual(QASemanticsEngine.match_question("Current monthly CTC", field_type="text"), "150000")
+        self.assertEqual(QASemanticsEngine.match_question("Expected salary per month", field_type="text"), "233333")
+
     def test_expected_ctc_and_upper_salary(self):
         self.assertEqual(QASemanticsEngine.match_question("Expected salary in INR", field_type="text"), "2800000")
         self.assertEqual(QASemanticsEngine.match_question("Desired CTC (in LPA)", field_type="text"), "28")
@@ -39,13 +44,13 @@ class TestQASemanticsEngine(unittest.TestCase):
         self.assertEqual(QASemanticsEngine.match_question("Years of Kubernetes experience", field_type="number"), "0")
 
     def test_core_tools_return_candidate_experience(self):
-        self.assertEqual(QASemanticsEngine.match_question("How many years of Python experience do you have?", field_type="number"), "4")
+        self.assertEqual(QASemanticsEngine.match_question("How many years of Python experience do you have?", field_type="number"), "5")
         self.assertEqual(QASemanticsEngine.match_question("Years of experience with SQL", field_type="number"), "4")
         self.assertEqual(QASemanticsEngine.match_question("Years of Snowflake experience", field_type="number"), "4")
         self.assertEqual(QASemanticsEngine.match_question("Years of Apache Airflow experience", field_type="number"), "4")
 
     def test_notice_period_and_availability(self):
-        self.assertEqual(QASemanticsEngine.match_question("What is your notice period?", field_type="text"), "Immediate Joiner (0 days notice)")
+        self.assertEqual(QASemanticsEngine.match_question("What is your notice period?", field_type="text"), "0")
         self.assertEqual(QASemanticsEngine.match_question("Notice period in days", field_type="number"), "0")
         self.assertEqual(QASemanticsEngine.match_question("Availability to start (in days)", field_type="number"), "0")
 
@@ -102,6 +107,21 @@ class TestQASemanticsEngine(unittest.TestCase):
         self.assertEqual(QASemanticsEngine.sanitize_experience_or_duration("4.8 years", "python experience"), "4")
         self.assertEqual(QASemanticsEngine.sanitize_experience_or_duration("4 years", "total experience"), "4")
 
+    def test_total_experience_and_db_tools(self):
+        # Database & SQL tools strictly 4 years
+        self.assertEqual(QASemanticsEngine.match_question("How many years of experience do you have with DB?", field_type="text"), "4")
+        self.assertEqual(QASemanticsEngine.match_question("Years of experience with database", field_type="text"), "4")
+        self.assertEqual(QASemanticsEngine.match_question("How many years of experience do you have with datalake?", field_type="text"), "4")
+        self.assertEqual(QASemanticsEngine.match_question("Years of experience with PostgreSQL", field_type="text"), "4")
+        self.assertEqual(QASemanticsEngine.match_question("How many years of experience with SQL?", field_type="text"), "4")
+
+        # Total work experience strictly 5 years or 60 months
+        self.assertEqual(QASemanticsEngine.match_question("Total experience", field_type="text"), "5")
+        self.assertEqual(QASemanticsEngine.match_question("Overall work experience", field_type="text"), "5")
+        self.assertEqual(QASemanticsEngine.match_question("Years of experience", field_type="text"), "5")
+        self.assertEqual(QASemanticsEngine.match_question("Total experience in months", field_type="text"), "60")
+        self.assertEqual(QASemanticsEngine.match_question("Total months of experience", field_type="text"), "60")
+
     def test_gender_strictly_male(self):
         # 1. Text field
         self.assertEqual(QASemanticsEngine.match_question("What is your gender?", field_type="text"), "Male")
@@ -134,10 +154,54 @@ class TestQASemanticsEngine(unittest.TestCase):
         # Physical ailment
         self.assertEqual(QASemanticsEngine.match_question("Have you passed through or are you passing through any physical ailment or state of health", field_type="text"), "No")
         # Prior interview
+
+    def test_education_graduation_year(self):
+        self.assertEqual(QASemanticsEngine.match_question("What was your year of graduation?", field_type="text"), "2020")
+        self.assertEqual(QASemanticsEngine.match_question("Year of completion", field_type="text"), "2020")
+        self.assertEqual(QASemanticsEngine.match_question("College year of completion", field_type="text"), "2020")
+        self.assertEqual(QASemanticsEngine.match_question("Passing year of degree", field_type="text"), "2020")
+        self.assertEqual(QASemanticsEngine.match_question("College start year", field_type="text"), "2017")
         self.assertEqual(QASemanticsEngine.match_question("Have you ever appeared for an Interview at any Exl location during the last 90 days?", field_type="text"), "No")
         # Passport & Shifts
         self.assertEqual(QASemanticsEngine.match_question("Do you have a Valid Indian Passport ?", field_type="select", options=["Select an option", "Yes", "No"]), "Yes")
         self.assertEqual(QASemanticsEngine.match_question("Are you willing to work in shifts (Including Night Shifts) ?", field_type="select", options=["Select an option", "Yes", "No"]), "Yes")
+
+    def test_proficiency_and_domain_experience(self):
+        prof_opts = ["Expert", "Intermediate", "Beginner", "None"]
+        # Core skills -> Expert
+        self.assertEqual(QASemanticsEngine.match_question("Please rate your level of proficiency with the Pandas library in Python.", field_type="radio", options=prof_opts), "Expert")
+        self.assertEqual(QASemanticsEngine.match_question("Please rate your level of proficiency with PostgreSQL.", field_type="radio", options=prof_opts), "Expert")
+        # Secondary skills -> Intermediate
+        self.assertEqual(QASemanticsEngine.match_question("Please rate your level of proficiency with R.", field_type="radio", options=prof_opts), "Intermediate")
+        self.assertEqual(QASemanticsEngine.match_question("Please rate your level of proficiency with applied statistics and modelling.", field_type="radio", options=prof_opts), "Intermediate")
+        # Excluded skills -> None
+        self.assertEqual(QASemanticsEngine.match_question("Rate your proficiency in Java Spring Boot", field_type="radio", options=prof_opts), "None")
+        # Domain Experience (Pharma / ZS Associates) -> Yes
+        self.assertEqual(QASemanticsEngine.match_question("Do u have Experience in Pharma Domain", field_type="radio", options=["Yes", "No"]), "Yes")
+        self.assertEqual(QASemanticsEngine.match_question("Do u have Experience in Pharma Domain", field_type="text"), "Yes")
+        # Compensation expectations
+        self.assertEqual(QASemanticsEngine.match_question("What are your compensation expectations for this role?*", field_type="text"), "2800000")
+        self.assertEqual(QASemanticsEngine.match_question("What are your compensation expectations in LPA?", field_type="text"), "28")
+        self.assertEqual(QASemanticsEngine.match_question("What is your desired compensation?", field_type="text"), "2800000")
+        self.assertEqual(QASemanticsEngine.match_question("What is your current compensation?", field_type="text"), "1800000")
+
+        # Open-ended text
+        self.assertIn("quantitative data engineering", QASemanticsEngine.match_question("What is your reason for seeking a job change?", field_type="text"))
+        # Autonomous synthesis fallback
+        self.assertIn(QASemanticsEngine.synthesize_autonomous_answer("Any novel question?", field_type="radio", options=["Option A", "Option B"]), ["Option A", "Option B"])
+
+    def test_start_date_and_residence(self):
+        # Start date: returns formatted next business day
+        res_date = QASemanticsEngine.match_question("By what date in the future can you start? *", field_type="text")
+        self.assertTrue(re.match(r"^\d{2}/\d{2}/\d{4}$", res_date))
+        res_iso_date = QASemanticsEngine.match_question("Start date", field_type="date")
+        self.assertTrue(re.match(r"^\d{4}-\d{2}-\d{2}$", res_iso_date))
+        
+        # Residence
+        self.assertEqual(QASemanticsEngine.match_question("Where do you reside?", field_type="text"), "Noida, Uttar Pradesh, India")
+        self.assertEqual(QASemanticsEngine.match_question("Where do you reside?", field_type="select", options=["Bengaluru", "Noida", "Mumbai"]), "Noida")
+        self.assertEqual(QASemanticsEngine.match_question("Where do you reside?", field_type="select", options=["Delhi NCR", "Mumbai", "Hyderabad"]), "Delhi NCR")
+        self.assertEqual(QASemanticsEngine.match_question("Where do you reside?", field_type="select", options=["India", "USA", "UK"]), "India")
 
 
 if __name__ == "__main__":

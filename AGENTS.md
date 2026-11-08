@@ -41,8 +41,9 @@ All fields below are loaded from `.env` or structured user inputs. When generati
 
 ### 1.2 Professional Overview & Compensation
 - **Status:** Actively exploring opportunities (Immediate availability)
-- **Notice Period:** `Immediate Joiner (0 days notice)`
-- **Total Experience:** `4.8` years
+- **Notice Period:** `0` (Immediate)
+- **Notice Period Directive:** Whenever any text or number field asks 'What is your notice period?', 'Notice period', or 'Availability to start', ALWAYS write strictly `0` (or select `Immediate` / `0 days` in dropdowns).
+- **Total Experience:** `5` years (`60` months)
 - **Current CTC / Compensation / Annual Income:** `18` LPA (`1800000`)
 - **Annual Income Directive:** Whenever any field asks for annual income, current salary, compensation, current CTC, or package, ALWAYS use `1800000` (or `18` if LPA/decimal). NEVER fill `4` or years of experience into income/salary fields.
 - **Experience & Duration Directive:** Whenever any field or question asks for experience, tenure, or duration (e.g. years of experience with a skill/tool, total experience, notice period in days or months), NEVER write words like 'year', 'month', or 'day', and never write decimals. ALWAYS write strictly an integer value (e.g. `4`, `0`).
@@ -67,7 +68,7 @@ All fields below are loaded from `.env` or structured user inputs. When generati
 `[NOT_SET: CANDIDATE_EXPERIENCE_ENTRIES]`
 
 ### 1.5 Technical Skills Template
-- **Primary Languages & Query Engines:** `Python, PySpark, SQL (Snowflake, PostgreSQL (5 yr exp), Trino, Oracle), Apache Airflow, ETL/ELT Architectures (4 yr exp), AI Agents & Webhooks, SQL Performance Tuning, Data Modeling/Warehouse (5 yr exp), Databases (5 yr exp)`
+- **Primary Languages & Query Engines:** `Python, PySpark, SQL (Snowflake, PostgreSQL (4 yr exp), Trino, Oracle), Apache Airflow, ETL/ELT Architectures (4 yr exp), AI Agents & Webhooks, SQL Performance Tuning, Data Modeling/Warehouse (4 yr exp), Databases & Data Lakes (4 yr exp)`
 - **ETL / Frameworks & Tools:** `Tableau, AWS (S3, SNS), Git, Bitbucket, SonarQube, Apache Airflow, Unix/Linux, Microsoft Excel, PowerPoint, Meta Ads & Pixel, Jupyter Notebooks`
 - **Secondary / Data Science & ML:** `Machine Learning (Scikit-learn, Feature Engineering, Anomaly Modeling, Cohort Analytics, Time-Series Forecasting), AWS (SNS, S3), Autosys, REST APIs, Unix, SonarQube, Bitbucket`
 - **Domain Specializations:** `Data Governance & Engineering, Healthcare Commercial Analytics (HIPAA, PII, HCP/HCO, Claims, Field Force & Sales Analytics), AI Agent Automation, E-commerce/D2C Analytics, Financial Valuation`

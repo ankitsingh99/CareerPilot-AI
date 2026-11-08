@@ -15,6 +15,7 @@ import os
 import re
 import json
 from pathlib import Path
+from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Tuple
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -66,8 +67,14 @@ def load_candidate_context() -> Dict[str, Any]:
 
     ctc_inr = os.getenv("CANDIDATE_CURRENT_CTC_INR", "1800000")
     exp_ctc_inr = os.getenv("CANDIDATE_EXPECTED_CTC_INR", "2800000")
-    total_yoe = os.getenv("CANDIDATE_TOTAL_YOE", "4.8")
-    yoe_int = str(int(float(total_yoe)))
+    total_yoe = os.getenv("CANDIDATE_TOTAL_YOE", "5")
+    try:
+        yoe_f = float(total_yoe)
+        yoe_int = str(int(yoe_f))
+        yoe_months = str(int(yoe_f * 12)) if yoe_f > 0 else "60"
+    except Exception:
+        yoe_int = "5"
+        yoe_months = "60"
 
     designation = "Business and Technology Consultant"
     linkedin = cand.get("linkedin") or os.getenv("CANDIDATE_LINKEDIN_URL", "https://linkedin.com/in/ankit-singh99")
@@ -77,6 +84,8 @@ def load_candidate_context() -> Dict[str, Any]:
     major = os.getenv("CANDIDATE_MAJOR", "Business Economics")
     institution = os.getenv("CANDIDATE_UNIVERSITY", "University of Delhi")
     gpa = os.getenv("CANDIDATE_GPA", "6.5")
+    grad_year = os.getenv("CANDIDATE_GRADUATION_YEAR", "2020")
+    education_start_year = os.getenv("CANDIDATE_EDUCATION_START_YEAR", "2017")
 
     return {
         "name": name,
@@ -95,6 +104,7 @@ def load_candidate_context() -> Dict[str, Any]:
         "exp_ctc_inr": exp_ctc_inr,
         "total_yoe": total_yoe,
         "yoe_int": yoe_int,
+        "yoe_months": yoe_months,
         "designation": designation,
         "linkedin": linkedin,
         "github": github,
@@ -102,7 +112,11 @@ def load_candidate_context() -> Dict[str, Any]:
         "major": major,
         "institution": institution,
         "gpa": gpa,
+        "grad_year": grad_year,
+        "completion_year": grad_year,
+        "education_start_year": education_start_year,
         "notice_period": os.getenv("CANDIDATE_NOTICE_PERIOD", "Immediate Joiner (0 days notice)"),
+        "notice_period_text": os.getenv("CANDIDATE_NOTICE_PERIOD", "Immediate Joiner (0 days notice)"),
         "notice_period_days": os.getenv("CANDIDATE_NOTICE_PERIOD_DAYS", "0"),
         "current_company": os.getenv("CANDIDATE_CURRENT_COMPANY", "Rush by Kira"),
         "verified_companies": os.getenv("CANDIDATE_VERIFIED_COMPANIES", "ZS Associates,Rush by Kira,TresVista"),
@@ -359,20 +373,41 @@ class QASemanticsEngine:
                         if pref in opt.lower():
                             return opt.strip()
 
+            # Sourcing / Referral Source options
+            if any(k in lbl for k in ["how did you hear", "source", "hear about this", "where did you hear"]):
+                for pref in [
+                    "direct to careers at agoda", "direct to careers", "careers website",
+                    "company website", "career website", "company career site", "careers page",
+                    "social network (e.g. linkedin", "external job board", "linkedin"
+                ]:
+                    for opt in options:
+                        if pref in opt.lower():
+                            return opt.strip()
+
+            # Employee relationship options
+            if any(k in lbl for k in ["how you know the employee", "how do you know the employee", "relationship to employee", "relationship with employee"]):
+                for pref in ["other", "none", "not applicable", "n/a", "friend"]:
+                    for opt in options:
+                        if pref in opt.lower():
+                            return opt.strip()
+
             # Yes / No options
             if any(k in lbl for k in [
                 "authorized", "relocate", "hybrid", "onsite", "travel", "background check",
                 "drug", "consent", "privacy", "terms", "agree", "shift", "shifts", "us hours",
-                "passport", "valid passport"
+                "passport", "valid passport", "relocate to bangkok", "sms updates", "text/sms",
+                "newsletters", "email me about other job openings", "use of personal data"
             ]):
                 for opt in options:
-                    if opt.strip().lower() == "yes" or opt.strip().lower().startswith("yes"):
+                    if opt.strip().lower() == "yes" or opt.strip().lower().startswith("yes") or "willing" in opt.lower():
                         return opt.strip()
 
             if any(k in lbl for k in [
                 "sponsorship", "referral", "relationship", "relative", "felony", "crime", "non-compete",
                 "worked with", "worked before", "previously employed", "previous employment", "physical ailment",
-                "ailment", "state of health", "interview at", "interviewed", "interview in last", "appeared for an interview"
+                "ailment", "state of health", "interview at", "interviewed", "interview in last", "appeared for an interview",
+                "deloitte", "independent auditor", "subsidiary entities", "associated with deloitte",
+                "booking holdings", "presently employed", "previously applied"
             ]):
                 for opt in options:
                     if opt.strip().lower() == "no" or opt.strip().lower().startswith("no"):
@@ -468,6 +503,56 @@ class QASemanticsEngine:
                     if cand["city"].lower() in opt_clean.lower() or re.search(r"\bindia\b", opt_clean, re.IGNORECASE):
                         return opt_clean
 
+            # Skill / Tool Proficiency ratings (Expert, Intermediate, Beginner, None)
+            is_proficiency_q = any(k in lbl for k in ["proficiency", "rate your", "level of", "how proficient", "how comfortable", "expertise"])
+            has_proficiency_opts = any(any(level in opt.lower() for level in ["expert", "intermediate", "beginner", "advanced", "proficient"]) for opt in options)
+            if is_proficiency_q or has_proficiency_opts:
+                is_core = any(k in lbl for k in [
+                    "python", "pandas", "sql", "postgresql", "postgres", "pyspark", "spark", "snowflake",
+                    "data warehouse", "data warehousing", "data modeling", "etl", "elt", "airflow",
+                    "tableau", "power bi", "bi tool", "database", "databases", "analytics", "data analysis",
+                    "excel", "dashboard"
+                ])
+                is_excluded = any(k in lbl for k in [
+                    "java", "spring boot", "j2ee", "c++", "c#", "ruby", "php", "kubernetes", "docker", "devops"
+                ])
+                if is_excluded:
+                    for opt in options:
+                        if any(term in opt.lower() for term in ["none", "no experience", "not applicable", "0"]):
+                            return opt.strip()
+                    for opt in options:
+                        if "beginner" in opt.lower():
+                            return opt.strip()
+                elif is_core:
+                    for opt in options:
+                        if any(term in opt.lower() for term in ["expert", "advanced", "proficient", "high"]):
+                            return opt.strip()
+                    for opt in options:
+                        if "intermediate" in opt.lower():
+                            return opt.strip()
+                else:
+                    for opt in options:
+                        if any(term in opt.lower() for term in ["intermediate", "medium", "working knowledge", "moderate"]):
+                            return opt.strip()
+                    for opt in options:
+                        if any(term in opt.lower() for term in ["expert", "advanced", "proficient"]):
+                            return opt.strip()
+                for opt in options:
+                    if "intermediate" in opt.lower():
+                        return opt.strip()
+
+            # Domain experience & Positive qualifications (Yes)
+            if any(k in lbl for k in [
+                "experience in pharma", "pharma domain", "pharmaceutical", "healthcare", "life sciences",
+                "commercial analytics", "hcp", "hco", "claims data", "retail", "e-commerce", "d2c",
+                "consulting", "financial", "valuation", "machine learning projects", "ml projects",
+                "time series", "time-series", "tca", "market structure", "trading", "derivatives",
+                "bangalore", "bengaluru", "delhi", "noida", "mumbai", "pune", "hyderabad", "chennai", "gurgaon"
+            ]):
+                for opt in options:
+                    if opt.strip().lower() in ["yes", "willing", "agree"] or opt.strip().lower().startswith("yes"):
+                        return opt.strip()
+
         # ── 0. COMPENSATION NEGOTIABILITY ────────────────────────────────────────
         if any(k in lbl for k in ["negotiable", "open to negotiation", "is your ctc negotiable", "is your salary negotiable"]):
             return "Yes"
@@ -492,13 +577,22 @@ class QASemanticsEngine:
             return "Yes"
 
         # ── 2. COMPENSATION: DESIRED / EXPECTED CTC ──────────────────────────────
-        if any(k in lbl for k in [
-            "desired salary", "desired compensation", "desired ctc", "desired income",
-            "desired pay", "expected salary", "expected ctc", "expected compensation",
-            "expected income", "expected package", "salary expectation", "ctc expectation",
-            "expected annual", "minimum salary", "pay expectation", "desired rate", "quote your ctc"
-        ]) and "negotiable" not in lbl:
+        if (
+            (any(k in lbl for k in ["expect", "desired", "expectation", "expectations", "quote", "target", "looking for"]) and
+             any(k in lbl for k in ["salary", "compensation", "ctc", "pay", "income", "package", "remuneration", "rate"]))
+            or any(k in lbl for k in [
+                "desired salary", "desired compensation", "desired ctc", "desired income",
+                "desired pay", "expected salary", "expected ctc", "expected compensation",
+                "expected income", "expected package", "salary expectation", "ctc expectation",
+                "salary expectations", "compensation expectation", "compensation expectations",
+                "expected annual", "minimum salary", "pay expectation", "pay expectations", "desired rate", "quote your ctc"
+            ])
+        ) and "negotiable" not in lbl:
+            is_monthly = any(k in lbl for k in ["per month", "monthly", "in months", "a month", "/month", "/mo"])
             is_lpa = any(k in lbl for k in ["lpa", "lac", "lakh", "decimal", "in lacs", "in lakhs", "in lpa"])
+            if is_monthly:
+                base_val = int(upper_salary[0]) if (upper_salary and upper_salary[0] and upper_salary[0].isdigit()) else int(cand["exp_ctc_inr"])
+                return str(base_val // 12)
             if upper_salary and upper_salary[0]:
                 return upper_salary[1] if is_lpa else upper_salary[0]
             return cand["exp_ctc_lpa"] if is_lpa else cand["exp_ctc_inr"]
@@ -514,25 +608,54 @@ class QASemanticsEngine:
             "current base", "base salary", "compensation", "remuneration", "package", "salary",
             "ctc"
         ]):
+            is_monthly = any(k in lbl for k in ["per month", "monthly", "in months", "a month", "/month", "/mo"])
             is_lpa = any(k in lbl for k in ["lpa", "lac", "lakh", "decimal", "in lacs", "in lakhs", "in lpa"])
+            if is_monthly:
+                return str(int(cand["ctc_inr"]) // 12)
             return cand["ctc_lpa"] if is_lpa else cand["ctc_inr"]
 
-        # ── 4. NOTICE PERIOD / AVAILABILITY ──────────────────────────────────────
+        # ── 4. NOTICE PERIOD / AVAILABILITY & START DATE ─────────────────────────
+        # Future / Earliest Start Date (select next business day per user directive)
+        if (
+            any(k in lbl for k in [
+                "date in the future can you start", "date you can start",
+                "earliest start date", "by what date", "what date can you start",
+                "start date", "date of joining", "joining date"
+            ]) or (field_type == "date" and any(k in lbl for k in ["start", "join", "available", "begin"]))
+        ):
+            today = datetime.now()
+            # 0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri, 5=Sat, 6=Sun
+            w = today.weekday()
+            delta_days = 3 if w == 4 else (2 if w == 5 else 1)
+            next_bday = today + timedelta(days=delta_days)
+            if options:
+                target_str = next_bday.strftime("%d/%m/%Y")
+                alt_str = next_bday.strftime("%m/%d/%Y")
+                iso_str = next_bday.strftime("%Y-%m-%d")
+                for opt in options:
+                    opt_clean = opt.strip()
+                    if any(s in opt_clean for s in [target_str, alt_str, iso_str, "Immediate", "0 days", "Immediately"]):
+                        return opt_clean
+            if field_type == "date":
+                return next_bday.strftime("%Y-%m-%d")
+            if any(k in lbl for k in ["dd/mm", "dd-mm", "d/m/y"]):
+                return next_bday.strftime("%d/%m/%Y")
+            return next_bday.strftime("%m/%d/%Y")
+
         if any(k in lbl for k in [
             "notice days", "days notice", "how many days notice", "notice period in days",
             "how many days can you join", "in how many days", "availability to join (in days)",
-            "availability to start (in days)", "notice in days"
+            "availability to start (in days)", "notice in days", "notice period in months",
+            "notice in months", "notice period in weeks", "notice in weeks"
         ]) or (field_type == "number" and any(k in lbl for k in ["notice", "availability", "joining"])):
             return "0"
 
         if any(k in lbl for k in [
             "notice period", "availability", "how soon", "joining time",
-            "earliest start date", "available to start", "days notice", "how many days notice",
+            "available to start", "days notice", "how many days notice",
             "serving notice", "availability to join"
         ]):
-            if field_type == "number":
-                return "0"
-            return cand["notice_period"]
+            return "0"
 
         # ── 5. CONTACT & PERSONAL IDENTITY ───────────────────────────────────────
         # Referral question guard (must precede name matching to avoid capturing "first and last name of employee")
@@ -555,7 +678,23 @@ class QASemanticsEngine:
             return cand["linkedin"]
         if any(k in lbl for k in ["github", "portfolio", "git url", "code repository"]):
             return cand["github"]
-        if any(k in lbl for k in ["city", "current location", "residence city", "place of residence", "residing city"]):
+        if any(k in lbl for k in [
+            "city", "current location", "residence city", "place of residence", "residing city",
+            "where do you reside", "where do you currently reside", "where do you live",
+            "current residence", "location of residence"
+        ]):
+            if options:
+                for opt in options:
+                    if "noida" in opt.lower():
+                        return opt
+                for opt in options:
+                    if any(k in opt.lower() for k in ["delhi ncr", "delhi", "gurugram", "ncr"]):
+                        return opt
+                for opt in options:
+                    if "india" in opt.lower():
+                        return opt
+            if "city" in lbl and not any(k in lbl for k in ["state", "country", "address", "where", "reside", "live"]):
+                return cand["city"]
             return f"{cand['city']}, {cand['state']}, {cand['country']}"
         if any(k in lbl for k in ["postal", "zip", "pincode", "pin code", "postal code"]):
             return cand["pincode"]
@@ -578,6 +717,10 @@ class QASemanticsEngine:
             return ""
 
         # ── 6. EDUCATION & ACADEMICS ─────────────────────────────────────────────
+        if any(k in lbl for k in ["graduation year", "year of graduation", "completion year", "year of completion", "passing year", "year of passing", "passout year", "year of passout", "degree completion", "college year of completion"]):
+            return cand.get("grad_year", "2020")
+        if any(k in lbl for k in ["commencement year", "start year", "year of joining", "admission year"]) and any(k in lbl for k in ["college", "university", "education", "degree", "school"]):
+            return cand.get("education_start_year", "2017")
         if any(k in lbl for k in ["gpa", "cgpa", "grade", "percentage", "academic score", "marks"]):
             return cand["gpa"]
         if any(k in lbl for k in ["university", "college", "institution", "school name", "granting institution"]):
@@ -609,7 +752,16 @@ class QASemanticsEngine:
         if any(k in lbl for k in ["gcp", "bigquery", "google cloud", "cloud storage"]) and any(k in lbl for k in ["year", "yoe", "experience", "how many"]):
             return "4"
 
-        if any(k in lbl for k in ["database", "databases", "rdbms", "sql"]) and any(k in lbl for k in ["year", "yoe", "experience", "how many"]):
+        # Airflow / ETL / ELT -> 4 years
+        if any(k in lbl for k in ["airflow", "apache airflow", "etl", "elt", "data pipeline"]) and any(k in lbl for k in ["year", "yoe", "experience", "how many"]):
+            return "4"
+
+        # Database / Data Lake / SQL / PostgreSQL / DBMS / DB Tools -> strictly 4 years
+        if any(k in lbl for k in [
+            "db", "database", "databases", "datalake", "data lake", "sql", "postgresql",
+            "postgres", "rdbms", "dbms", "database tool", "database tools", "snowflake",
+            "trino", "oracle", "nosql", "relational database"
+        ]) and any(k in lbl for k in ["year", "yoe", "experience", "how many", "duration"]):
             return "4"
 
         for pat in cls.CORE_TECH_PATTERNS:
@@ -617,8 +769,14 @@ class QASemanticsEngine:
                 return cand["yoe_int"]
 
         # ── 9. TOTAL EXPERIENCE / SENIORITY ──────────────────────────────────────
-        if any(k in lbl for k in ["total experience", "overall experience", "years of experience", "total yoe", "relevant experience"]):
-            return cand["yoe_int"]
+        is_tool_specific = any(w in lbl for w in [" with ", " on ", " using ", " working on "])
+        if not is_tool_specific and any(k in lbl for k in [
+            "total experience", "overall experience", "years of experience", "total yoe",
+            "relevant experience", "total work experience", "overall work experience",
+            "months of experience", "experience in months", "total months"
+        ]):
+            is_months = any(k in lbl for k in ["in month", "in months", "total months", "months of experience", "months"])
+            return cand.get("yoe_months", "60") if is_months else cand["yoe_int"]
 
         # ── 10. COMPLIANCE & LEGAL SCREENING (YES / NO) ──────────────────────────
         # Referral question (text vs boolean)
@@ -681,24 +839,41 @@ class QASemanticsEngine:
         ]):
             return "Yes"
 
-        # ── 11. TEXTAREA ANSWERS (MICRO-NARRATIVES) ──────────────────────────────
-        if field_type == "textarea":
-            if any(k in lbl for k in ["tell us about yourself", "summary", "profile", "overview", "pitch"]):
+        # ── 11. TEXT & TEXTAREA ANSWERS (MICRO-NARRATIVES) ───────────────────────
+        if field_type in ("text", "textarea"):
+            if any(k in lbl for k in ["reason for seeking a job change", "reason for change", "why change", "why looking for a change"]):
+                return (
+                    "Seeking a higher-impact role in quantitative data engineering and analytics to leverage 4.8 years of "
+                    "experience building high-scale data pipelines and statistical workflows."
+                )
+            if any(k in lbl for k in ["why do you want to join", "why this company", "why us", "interest in joining", "interested in joining"]):
+                return (
+                    "Excited to leverage my data engineering and analytics consulting background to solve mission-critical "
+                    "enterprise challenges, build reliable data systems, and deliver measurable operational impact."
+                )
+            if any(k in lbl for k in ["tell us about yourself", "summary", "profile", "overview", "pitch", "brief bio"]):
                 return (
                     "Business & Technology Consultant with 4.8 years of experience across healthcare commercial analytics, "
                     "Big Data pipelines, and AI agent automation. Ex-ZS Associates with a track record of driving data quality, "
                     "reconciliation agents, and high-performance ETL architectures."
                 )
-            if any(k in lbl for k in ["why do you want to join", "why this company", "why us", "interest"]):
+            if any(k in lbl for k in ["what makes you a good fit", "why should we hire you", "why are you the best"]):
                 return (
-                    "Excited to leverage my data engineering and AI automation experience to solve mission-critical "
-                    "enterprise challenges, build reliable data systems, and deliver measurable operational impact."
+                    "With 4.8 years of experience spanning Big Data pipelines, SQL performance tuning, and AI agent automation "
+                    "at ZS Associates and Rush by Kira, I combine strong analytical rigor with practical execution."
                 )
             if any(k in lbl for k in ["leadership", "management", "team", "people management"]):
                 return (
                     "Managed a team of four at ZS Associates overseeing data standardization, cross-functional delivery, "
                     "and stakeholder reporting, reducing manual touchpoints by 80% while ensuring zero data discrepancies."
                 )
+            if any(k in lbl for k in ["describe your experience with", "work experience with", "experience working with"]):
+                return (
+                    "Extensive experience designing end-to-end data pipelines, ETL architectures, and predictive analytics "
+                    "across Python, SQL, PostgreSQL, Snowflake, and Apache Airflow with zero data discrepancies."
+                )
+            if any(k in lbl for k in ["experience in pharma", "pharma domain", "pharmaceutical", "healthcare"]):
+                return "Yes"
 
         # ── 12. DROPDOWN OPTION MATCHING ─────────────────────────────────────────
         if options:
@@ -728,3 +903,58 @@ class QASemanticsEngine:
         if field_type == "number":
             return cand["yoe_int"]
         return "N/A"
+
+    @classmethod
+    def synthesize_autonomous_answer(
+        cls,
+        question: str,
+        field_type: str = "text",
+        options: Optional[List[str]] = None
+    ) -> str:
+        """
+        Synthesize an autonomous, fact-based answer for any screening question
+        directly from candidate profile without prompting the user.
+        """
+        ans = cls.match_question(question, field_type=field_type, options=options)
+        if ans and ans != "N/A":
+            return ans
+
+        cand = load_candidate_context()
+        lbl = (question or "").strip().lower()
+
+        # Options-based autonomous resolution
+        if options:
+            opts_clean = [o.strip() for o in options if o.strip()]
+            has_yes = any(o.lower() in ("yes", "willing", "agree") for o in opts_clean)
+            has_no = any(o.lower() in ("no", "disagree") for o in opts_clean)
+            if has_yes and has_no:
+                if any(k in lbl for k in ["sponsorship", "crime", "felony", "non-compete", "disability", "veteran", "lgbtq"]):
+                    return "No"
+                return "Yes"
+
+            # Proficiency levels (Intermediate / Expert)
+            for opt in opts_clean:
+                if any(level in opt.lower() for level in ["intermediate", "proficient", "expert", "advanced"]):
+                    return opt
+
+            for opt in opts_clean:
+                if opt.lower() not in ("select", "select an option", "please select", "none", ""):
+                    return opt
+
+        if field_type == "number":
+            if any(k in lbl for k in ["notice", "day", "week", "month", "gap"]):
+                return "0"
+            if any(k in lbl for k in ["ctc", "salary", "income", "compensation", "package"]):
+                is_monthly = any(k in lbl for k in ["month", "monthly", "mo"])
+                is_lpa = any(k in lbl for k in ["lpa", "lac", "lakh"])
+                if is_monthly:
+                    return str(int(cand["exp_ctc_inr"]) // 12)
+                return cand["exp_ctc_lpa"] if is_lpa else cand["exp_ctc_inr"]
+            return cand["yoe_int"]
+
+        if any(k in lbl for k in ["experience", "background", "work", "project"]):
+            return "Extensive experience designing scalable data pipelines, SQL transformations, and analytics solutions across Python, PostgreSQL, and Snowflake with 4.8 years of proven delivery."
+        if any(k in lbl for k in ["why", "reason", "interest"]):
+            return "Excited to leverage my data engineering and analytics consulting background to solve mission-critical data challenges and deliver high-impact enterprise solutions."
+
+        return "Yes"
