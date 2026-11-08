@@ -2083,13 +2083,7 @@ def run(
                             print(f"\n→ [{applied+1}/{target}] {det_title} @ {det_company} ({c_work_model or c_loc or loc}) [ID: {card_jid}]")
 
                             try:
-                                try:
-                            ok = apply_to_current_job(page, review_only=review_only)
-                        except RuntimeError as re_err:
-                            if "LINKEDIN_DAILY_LIMIT_REACHED" in str(re_err):
-                                print("\n[!] Halting scan loop: LinkedIn account daily Easy Apply quota reached for today.")
-                                return
-                            raise
+                                ok = apply_to_current_job(page, review_only=review_only)
                             except RuntimeError as re_err:
                                 if "LINKEDIN_DAILY_LIMIT_REACHED" in str(re_err):
                                     print("\n[!] Halting scan loop: LinkedIn account daily Easy Apply quota reached for today.")
