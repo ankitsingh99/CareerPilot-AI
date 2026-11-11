@@ -22,17 +22,27 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 KB_PATH = ROOT_DIR / "user_inputs" / "application_qa_knowledge_base.json"
 
 _SEMIN_CACHE: Dict[str, str] = {}
+_ENV_MEM_STATE: Dict[str, Any] = {"mtime": None}
+_KB_MEM_CACHE: Dict[str, Any] = {"mtime": None, "entries": [], "pattern_tokens": []}
 
 
 def load_env():
-    """Load key-value pairs from .env into os.environ if not already set."""
+    """Load key-value pairs from .env into os.environ once per file modification."""
     env_file = ROOT_DIR / ".env"
-    if env_file.exists():
-        for line in env_file.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+    if not env_file.exists():
+        return
+    try:
+        mtime = env_file.stat().st_mtime
+    except OSError:
+        mtime = None
+    if _ENV_MEM_STATE["mtime"] == mtime and mtime is not None:
+        return
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+    _ENV_MEM_STATE["mtime"] = mtime
 
 
 def load_candidate_context() -> Dict[str, Any]:
@@ -147,6 +157,12 @@ def save_novel_qa_to_kb(question: str, answer: str, category: str = "openrouter_
             "notes": "Learned and confirmed autonomously via OpenRouter Free Tier integration."
         })
         KB_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        _KB_MEM_CACHE["mtime"] = None
+    except Exception:
+        pass
+    try:
+        from intelligence.fast_recall_cache import put_qa_answer
+        put_qa_answer(question, answer, source=category)
     except Exception:
         pass
 
@@ -255,6 +271,11 @@ def ask_openrouter_free_llm(question: str, options: Optional[List[str]] = None, 
                 if matched_opt:
                     ans = matched_opt
             _SEMIN_CACHE[cache_key] = ans
+            try:
+                from intelligence.fast_recall_cache import put_qa_answer
+                put_qa_answer(question, ans, field_type=field_type, options=options, source="llm")
+            except Exception:
+                pass
             save_novel_qa_to_kb(question, ans)
             return ans
     except Exception:
@@ -292,23 +313,64 @@ class QASemanticsEngine:
     ]
 
     @classmethod
-    def lookup_knowledge_base(cls, label: str, field_type: str = "text") -> Optional[str]:
-        """Search local application_qa_knowledge_base.json first (0 tokens, 0 network requests)."""
+    def _get_kb_entries(cls) -> Tuple[List[Dict[str, Any]], List[Tuple[set, Dict[str, Any]]]]:
+        """Load and cache application_qa_knowledge_base.json + normalized token sets by mtime."""
         if not KB_PATH.exists():
-            return None
+            return [], []
         try:
-            data = json.loads(KB_PATH.read_text(encoding="utf-8"))
-            entries = data.get("qa_database", [])
-            lbl_clean = label.lower().strip()
+            mtime = KB_PATH.stat().st_mtime
+            if _KB_MEM_CACHE["mtime"] != mtime:
+                data = json.loads(KB_PATH.read_text(encoding="utf-8"))
+                entries = data.get("qa_database", [])
+                indexed: List[Tuple[set, Dict[str, Any]]] = []
+                from intelligence.fast_recall_cache import normalize_tokens
+                for item in entries:
+                    for pat in item.get("question_patterns", []):
+                        toks = set(normalize_tokens(pat))
+                        if toks:
+                            indexed.append((toks, item))
+                _KB_MEM_CACHE["mtime"] = mtime
+                _KB_MEM_CACHE["entries"] = entries
+                _KB_MEM_CACHE["pattern_tokens"] = indexed
+            return _KB_MEM_CACHE["entries"], _KB_MEM_CACHE["pattern_tokens"]
+        except Exception:
+            return [], []
 
-            for item in entries:
-                for pat in item.get("question_patterns", []):
-                    pat_clean = pat.lower().strip()
-                    if pat_clean in lbl_clean or (len(lbl_clean) > 5 and lbl_clean in pat_clean):
-                        if field_type == "number" and "numeric_value" in item:
-                            return str(item["numeric_value"])
-                        if "standard_response" in item:
-                            return str(item["standard_response"])
+    @classmethod
+    def lookup_knowledge_base(cls, label: str, field_type: str = "text") -> Optional[str]:
+        """Search mtime-cached local application_qa_knowledge_base.json (exact + token overlap)."""
+        entries, indexed = cls._get_kb_entries()
+        if not entries:
+            return None
+        lbl_clean = label.lower().strip()
+
+        # 1. Fast exact/substring pattern match
+        for item in entries:
+            for pat in item.get("question_patterns", []):
+                pat_clean = pat.lower().strip()
+                if pat_clean in lbl_clean or (len(lbl_clean) > 5 and lbl_clean in pat_clean):
+                    if field_type == "number" and "numeric_value" in item:
+                        return str(item["numeric_value"])
+                    if "standard_response" in item:
+                        return str(item["standard_response"])
+
+        # 2. Normalized token-Jaccard fallback for reworded ATS prompts
+        try:
+            from intelligence.fast_recall_cache import normalize_tokens
+            q_toks = set(normalize_tokens(lbl_clean))
+            if len(q_toks) >= 2:
+                best_sim = 0.0
+                best_item: Optional[Dict[str, Any]] = None
+                for p_toks, item in indexed:
+                    sim = len(q_toks & p_toks) / len(q_toks | p_toks)
+                    if sim >= 0.80 and sim > best_sim:
+                        best_sim = sim
+                        best_item = item
+                if best_item:
+                    if field_type == "number" and "numeric_value" in best_item:
+                        return str(best_item["numeric_value"])
+                    if "standard_response" in best_item:
+                        return str(best_item["standard_response"])
         except Exception:
             pass
         return None
@@ -927,6 +989,15 @@ class QASemanticsEngine:
         kb_hit = cls.lookup_knowledge_base(lbl, field_type=field_type)
         if kb_hit:
             return kb_hit
+
+        # ── 13.5. FAST SQLITE/FTS5 RECALL CACHE (EXACT + FUZZY) ───────────────────
+        try:
+            from intelligence.fast_recall_cache import get_qa_answer
+            cached_qa = get_qa_answer(label, field_type=field_type, options=options)
+            if cached_qa:
+                return cached_qa
+        except Exception:
+            pass
 
         # ── 14. TIER 2 OPENROUTER FREE LLM FALLBACK ──────────────────────────────
         ai_res = ask_openrouter_free_llm(label, options=options, field_type=field_type)

@@ -23,13 +23,16 @@ except ImportError:
         except Exception:
             pass
 
+import hashlib
 import json
 import math
 import os
 import re
 import sqlite3
+import time
 import urllib.request
 import urllib.error
+from contextlib import closing
 from typing import Dict, List, Tuple, Any, Optional
 
 try:
@@ -62,15 +65,42 @@ def is_ollama_online() -> bool:
 
 
 def get_embedding(text: str) -> Optional[List[float]]:
-    """Compute 768-dim dense embedding vector on-device via Ollama."""
+    """Compute or return cached 768-dim dense embedding vector on-device via Ollama."""
+    clean_text = (text or "").strip()
+    if not clean_text:
+        return None
+    text_hash = hashlib.sha256(clean_text.encode("utf-8")).hexdigest()
+
+    # Check local embedding cache before calling Ollama
+    try:
+        init_vector_db()
+        with closing(sqlite3.connect(str(DB_PATH))) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT embedding_json FROM embedding_cache WHERE text_hash = ?", (text_hash,))
+            row = cur.fetchone()
+            if row:
+                return json.loads(row[0])
+    except Exception:
+        pass
+
     if not is_ollama_online():
         return None
     try:
-        data = json.dumps({"model": EMBED_MODEL, "prompt": text.strip()}).encode("utf-8")
+        data = json.dumps({"model": EMBED_MODEL, "prompt": clean_text}).encode("utf-8")
         req = urllib.request.Request(OLLAMA_EMBED_URL, data=data, headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             res = json.loads(resp.read().decode("utf-8"))
-            return res.get("embedding")
+            emb = res.get("embedding")
+            if emb:
+                try:
+                    with closing(sqlite3.connect(str(DB_PATH))) as conn, conn:
+                        conn.execute(
+                            "INSERT OR REPLACE INTO embedding_cache (text_hash, model, embedding_json, updated_at) VALUES (?, ?, ?, ?)",
+                            (text_hash, EMBED_MODEL, json.dumps(emb), time.time()),
+                        )
+                except Exception:
+                    pass
+            return emb
     except Exception as e:
         print(f"[local_rag] Embedding error: {e}")
         return None
@@ -87,43 +117,38 @@ def cosine_similarity(v1: List[float], v2: List[float]) -> float:
 
 
 def init_vector_db():
-    """Create local vector storage tables in jobs.db if not already present."""
-    conn = sqlite3.connect(str(DB_PATH))
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS semantic_memory (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            category TEXT,
-            title TEXT,
-            content TEXT,
-            embedding_json TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.commit()
-    conn.close()
+    """Create local vector and embedding cache tables in jobs.db if not already present."""
+    with closing(sqlite3.connect(str(DB_PATH))) as conn, conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS semantic_memory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                category TEXT,
+                title TEXT,
+                content TEXT,
+                embedding_json TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS embedding_cache (
+                text_hash TEXT PRIMARY KEY,
+                model TEXT,
+                embedding_json TEXT,
+                updated_at REAL
+            )
+        """)
 
 
 def seed_candidate_profile_vectors():
-    """Index sections of AGENTS.md into semantic_memory for on-device RAG."""
+    """Index sections of AGENTS.md into fast FTS5 chunk recall (always) and Ollama vectors (when online)."""
     init_vector_db()
-    if not AGENTS_MD_PATH.exists() or not is_ollama_online():
+    if not AGENTS_MD_PATH.exists():
         return
 
     text = AGENTS_MD_PATH.read_text(encoding="utf-8")
     sections = re.split(r"\n#{2,3}\s+", text)
 
-    conn = sqlite3.connect(str(DB_PATH))
-    cur = conn.cursor()
-
-    cur.execute("SELECT COUNT(*) FROM semantic_memory WHERE category='candidate_profile'")
-    count = cur.fetchone()[0]
-
-    if count >= len(sections) - 1 and count > 0:
-        conn.close()
-        return  # Already seeded
-
-    print(f"[local_rag] Indexing {len(sections)} profile chunks into on-device semantic memory...")
+    parsed_chunks = []
     for sec in sections:
         sec = sec.strip()
         if not sec:
@@ -131,33 +156,57 @@ def seed_candidate_profile_vectors():
         lines = sec.split("\n")
         title = lines[0].strip()
         content = "\n".join(lines[1:]).strip()
-        if len(content) < 30:
-            continue
+        if len(content) >= 30:
+            parsed_chunks.append({"category": "candidate_profile", "title": title, "content": content})
 
-        emb = get_embedding(content)
-        if emb:
-            cur.execute(
-                "INSERT INTO semantic_memory (category, title, content, embedding_json) VALUES (?, ?, ?, ?)",
-                ("candidate_profile", title, content, json.dumps(emb)),
-            )
+    # 1. Always index into fast offline SQLite/FTS5 chunk recall cache (0 Ollama dependency)
+    try:
+        from intelligence.fast_recall_cache import index_text_chunks
+        index_text_chunks(parsed_chunks)
+    except Exception:
+        pass
 
-    conn.commit()
-    conn.close()
+    if not is_ollama_online():
+        return
+
+    with closing(sqlite3.connect(str(DB_PATH))) as conn, conn:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM semantic_memory WHERE category='candidate_profile'")
+        count = cur.fetchone()[0]
+        if count >= len(parsed_chunks) and count > 0:
+            return
+
+        print(f"[local_rag] Indexing {len(parsed_chunks)} profile chunks into on-device semantic memory...")
+        for ch in parsed_chunks:
+            emb = get_embedding(ch["content"])
+            if emb:
+                cur.execute(
+                    "INSERT INTO semantic_memory (category, title, content, embedding_json) VALUES (?, ?, ?, ?)",
+                    ("candidate_profile", ch["title"], ch["content"], json.dumps(emb)),
+                )
+
     print("[local_rag] Candidate profile vector memory updated.")
 
 
 def query_semantic_memory(query_text: str, top_k: int = 3, min_similarity: float = 0.50) -> List[Dict[str, Any]]:
-    """Retrieve top-K most relevant profile and QA chunks using local cosine similarity."""
+    """Retrieve top-K relevant profile chunks via cached Ollama vectors or offline FTS5/BM25 fallback."""
     seed_candidate_profile_vectors()
     q_emb = get_embedding(query_text)
     if not q_emb:
-        return []
+        try:
+            from intelligence.fast_recall_cache import retrieve_relevant_chunks
+            return retrieve_relevant_chunks(
+                query_text,
+                top_k=top_k,
+                min_similarity=min(min_similarity, 0.15),
+            )
+        except Exception:
+            return []
 
-    conn = sqlite3.connect(str(DB_PATH))
-    cur = conn.cursor()
-    cur.execute("SELECT id, category, title, content, embedding_json FROM semantic_memory")
-    rows = cur.fetchall()
-    conn.close()
+    with closing(sqlite3.connect(str(DB_PATH))) as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT id, category, title, content, embedding_json FROM semantic_memory")
+        rows = cur.fetchall()
 
     scored = []
     for r in rows:

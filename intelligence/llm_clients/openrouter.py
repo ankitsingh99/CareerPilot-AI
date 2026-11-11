@@ -20,6 +20,7 @@ import hashlib
 import sqlite3
 import urllib.error
 import urllib.request
+from contextlib import closing
 from pathlib import Path
 
 _SECRETS_FILE = Path(__file__).parent.parent / ".candidate_secrets.json"
@@ -117,7 +118,7 @@ def print_token_benchmark():
 
 def _init_response_cache():
     _RESPONSE_CACHE_DB.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(_RESPONSE_CACHE_DB) as conn:
+    with closing(sqlite3.connect(_RESPONSE_CACHE_DB)) as conn, conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS response_cache (
                 cache_key TEXT PRIMARY KEY,
@@ -132,7 +133,7 @@ def get_cached_response(cache_key: str) -> str | None:
     """Retrieve locally cached LLM response to eliminate redundant OpenRouter requests."""
     try:
         _init_response_cache()
-        with sqlite3.connect(_RESPONSE_CACHE_DB) as conn:
+        with closing(sqlite3.connect(_RESPONSE_CACHE_DB)) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT response FROM response_cache WHERE cache_key = ?", (cache_key,))
             row = cursor.fetchone()
@@ -147,7 +148,7 @@ def save_cached_response(cache_key: str, model: str, response: str):
     """Persist LLM response to disk for permanent 0-token reuse."""
     try:
         _init_response_cache()
-        with sqlite3.connect(_RESPONSE_CACHE_DB) as conn:
+        with closing(sqlite3.connect(_RESPONSE_CACHE_DB)) as conn, conn:
             conn.execute(
                 "INSERT OR REPLACE INTO response_cache (cache_key, model, response, created_at) VALUES (?, ?, ?, ?)",
                 (cache_key, model, response, time.time()),

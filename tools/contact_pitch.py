@@ -149,23 +149,38 @@ DOMAIN_PROFILES: Dict[str, Dict[str, Any]] = {
 }
 
 
-def fetch_jd_markdown(url: str, timeout: int = 15) -> str:
-    """Safely fetches clean markdown from a public job posting URL via Jina Reader."""
+def fetch_jd_markdown(url: str, timeout: int = 15, cache_ttl_seconds: int = 86400) -> str:
+    """Safely fetches clean markdown from a public job posting URL with local SQLite+L1 cache."""
     if not url or not url.strip():
         return ""
-    ok, reason = validate_url(url.strip())
+    clean_url = url.strip()
+    ok, reason = validate_url(clean_url)
     if not ok:
         print(f"[contact_pitch:ssrf_guard] Blocked unsafe URL ({reason}).", file=sys.stderr)
         return ""
 
-    jina_url = f"https://r.jina.ai/{url.strip()}"
+    try:
+        from intelligence.fast_recall_cache import get_cached_text, put_cached_text
+        cached_md = get_cached_text(clean_url, max_age_seconds=cache_ttl_seconds)
+        if cached_md:
+            return cached_md
+    except Exception:
+        put_cached_text = None
+
+    jina_url = f"https://r.jina.ai/{clean_url}"
     req = urllib.request.Request(
         jina_url,
         headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X) CareerPilotAI/1.2"},
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.read().decode("utf-8", errors="ignore")
+            content = resp.read().decode("utf-8", errors="ignore")
+            if content and put_cached_text is not None:
+                try:
+                    put_cached_text(clean_url, content, category="jd_markdown")
+                except Exception:
+                    pass
+            return content
     except Exception as exc:
         print(f"[contact_pitch:fetch_warning] Could not fetch JD via Jina Reader: {exc}", file=sys.stderr)
         return ""
