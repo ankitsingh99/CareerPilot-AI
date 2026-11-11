@@ -138,6 +138,21 @@ class AdaptiveEvaluator:
                         )
                         remediations.append("Update organization for Rush by Kira to 'D2C Retail & E-Commerce Operations'.")
 
+        if violations:
+            try:
+                from intelligence.mistake_router import record_mistake_if_enabled
+                sev = "critical" if any("ZERO_REFERENCE_FABRICATION" in v for v in violations) else "high"
+                record_mistake_if_enabled(
+                    "form_audit",
+                    severity=sev,
+                    category="invariant_violation",
+                    model_used="automation",
+                    source="adaptive_evaluator",
+                    details="; ".join(violations[:3]),
+                )
+            except Exception:
+                pass
+
         return {
             "passed": len(violations) == 0,
             "violations_count": len(violations),
@@ -233,6 +248,21 @@ class AdaptiveEvaluator:
                 "invariant": "RUSH_BY_KIRA_RETAIL",
                 "directive": "Rush by Kira is strictly a D2C retail e-commerce business."
             })
+
+        if detections:
+            try:
+                from intelligence.mistake_router import record_mistake_if_enabled
+                sev = "critical" if any(d["invariant"] == "ZERO_REFERENCE_FABRICATION" for d in detections) else "high"
+                record_mistake_if_enabled(
+                    "ats_qa",
+                    severity=sev,
+                    category="user_correction",
+                    model_used="automation",
+                    source="user_feedback",
+                    details=text[:300],
+                )
+            except Exception:
+                pass
 
         return {
             "matched_corrections": detections,

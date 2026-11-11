@@ -263,6 +263,21 @@ def lint_and_format(text: str, proofread_llm: bool = False, role_title: str = ""
 
     passed = len(all_violations) == 0 and ("—" not in clean_text) and watermarks_purged >= 0
 
+    if not passed:
+        try:
+            from intelligence.mistake_router import record_mistake_if_enabled
+            sev = "high" if structural_violations else "medium"
+            record_mistake_if_enabled(
+                "cover_letter",
+                severity=sev,
+                category="lint_violation",
+                model_used="draft_pipeline",
+                source="linter",
+                details="; ".join((all_violations or ["em_dash_detected"])[:3]),
+            )
+        except Exception:
+            pass
+
     return {
         "clean_text": clean_text,
         "passed": passed,

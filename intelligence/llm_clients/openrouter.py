@@ -397,6 +397,7 @@ def _dispatch_chat_completion(
     system: str = "You are a concise, structured data assistant.",
     model: str = DEFAULT_FREE_MODEL,
     task_tier: str = "auto",
+    task_type: str = "",
     temperature: float = 0.7,
     max_tokens: int = 1500,
     json_mode: bool = False,
@@ -408,11 +409,27 @@ def _dispatch_chat_completion(
     if not is_free_model(model):
         raise ValueError(f"Strict Zero-Cost Violation: Model '{model}' is not a free-tier endpoint (:free).")
 
+    effective_tier = task_tier
+    if task_type:
+        try:
+            from intelligence.mistake_router import get_task_route
+            route = get_task_route(task_type, default_tier=task_tier, auto_evaluate=True)
+            if route.get("openrouter_tier") == "heavy" and (task_tier or "auto").strip().lower() in (
+                "auto", "chore", "classify", "extract", "qa"
+            ):
+                effective_tier = "heavy"
+                print(
+                    f"[mistake_router] Escalated '{task_type}' -> {route['recommended_tier']} "
+                    f"(score={route['severity_score']}, mistakes={route['mistake_count']})"
+                )
+        except Exception:
+            pass
+
     cleaned_prompt = trim_text_content(prompt) if trim_input else prompt
     cleaned_system = trim_text_content(system, max_chars=1500) if trim_input else system
 
     effective_max_tokens = max_tokens
-    if (task_tier or "").strip().lower() in ("chore", "classify", "extract", "qa"):
+    if (effective_tier or "").strip().lower() in ("chore", "classify", "extract", "qa"):
         effective_max_tokens = min(max_tokens, 300)
 
     # 1. Local Persistent Disk Cache Check (0 tokens, 0 network requests)
@@ -459,14 +476,14 @@ def _dispatch_chat_completion(
     }
 
     available_pool = fetch_free_models()
-    candidate_models = select_free_models_for_tier(model, available_pool, task_tier=task_tier)
+    candidate_models = select_free_models_for_tier(model, available_pool, task_tier=effective_tier)
     last_error = None
 
     for current_model in candidate_models:
         if not is_free_model(current_model):
             continue
 
-        print(f"\n[openrouter] Model in use: '{current_model}' (Zero-Cost Free Tier | tier={task_tier})")
+        print(f"\n[openrouter] Model in use: '{current_model}' (Zero-Cost Free Tier | tier={effective_tier})")
 
         payload: dict = {
             "model": current_model,
@@ -521,6 +538,18 @@ def _dispatch_chat_completion(
             print(f"[openrouter] Error with '{current_model}': {exc}. Attempting next free model...")
 
     if last_error:
+        try:
+            from intelligence.mistake_router import record_mistake_if_enabled
+            record_mistake_if_enabled(
+                task_type or "openrouter_inference",
+                severity="medium",
+                category="openrouter_dispatch_failed",
+                model_used=model,
+                source="openrouter_dispatch",
+                details=str(last_error),
+            )
+        except Exception:
+            pass
         raise last_error
     raise RuntimeError("No free tier models available.")
 
@@ -531,6 +560,7 @@ def ask(
     system: str = "You are a concise, structured data assistant.",
     model: str = DEFAULT_FREE_MODEL,
     task_tier: str = "auto",
+    task_type: str = "",
     temperature: float = 0.7,
     max_tokens: int = 1500,
     json_mode: bool = False,
@@ -544,6 +574,7 @@ def ask(
         system=system,
         model=model,
         task_tier=task_tier,
+        task_type=task_type,
         temperature=temperature,
         max_tokens=max_tokens,
         json_mode=json_mode,
@@ -560,6 +591,7 @@ def ask_with_usage(
     system: str = "You are a concise, structured data assistant.",
     model: str = DEFAULT_FREE_MODEL,
     task_tier: str = "auto",
+    task_type: str = "",
     temperature: float = 0.7,
     max_tokens: int = 1500,
     json_mode: bool = False,
@@ -573,6 +605,7 @@ def ask_with_usage(
         system=system,
         model=model,
         task_tier=task_tier,
+        task_type=task_type,
         temperature=temperature,
         max_tokens=max_tokens,
         json_mode=json_mode,

@@ -215,8 +215,23 @@ def ask_openrouter_free_llm(question: str, options: Optional[List[str]] = None, 
         else:
             user_prompt += "Return ONLY the concise exact value to type into the field."
 
+    task_name = "ats_textarea" if field_type == "textarea" else "ats_qa"
     task_tier = "draft" if field_type == "textarea" else "chore"
     max_tok = 180 if field_type == "textarea" else 80
+
+    try:
+        from intelligence.mistake_router import get_task_route
+        route = get_task_route(task_name, default_tier=task_tier, auto_evaluate=True)
+        if route.get("openrouter_tier") == "heavy":
+            task_tier = "heavy"
+            if route.get("requires_frontier"):
+                print(
+                    f"[mistake_router] '{task_name}' requires frontier oversight "
+                    f"(score={route['severity_score']}, mistakes={route['mistake_count']}); "
+                    "escalating headless fallback to heavy :free tier."
+                )
+    except Exception:
+        pass
 
     try:
         # Tier 1: Zero-external-token local Ollama inference if running
@@ -232,6 +247,7 @@ def ask_openrouter_free_llm(question: str, options: Optional[List[str]] = None, 
                 system=system_prompt,
                 model="auto",
                 task_tier=task_tier,
+                task_type=task_name,
                 max_tokens=max_tok,
             )
 
@@ -249,6 +265,18 @@ def ask_openrouter_free_llm(question: str, options: Optional[List[str]] = None, 
                 clean_lines.append(cl)
         ans = clean_lines[-1].strip('"').strip("'").strip() if clean_lines else (lines[-1].strip('"').strip("'").strip() if lines else raw.strip('"').strip("'").strip())
         if field_type != "textarea" and (len(ans) > 70 or any(w in ans.lower() for w in ["we need", "candidate", "instruction", "constraint", "field label", "preferred name", "likely"])):
+            try:
+                from intelligence.mistake_router import record_mistake_if_enabled
+                record_mistake_if_enabled(
+                    task_name,
+                    severity="medium",
+                    category="llm_output_rejected",
+                    model_used=task_tier,
+                    source="qa_semantics_engine",
+                    details=f"Rejected verbose/meta output for question: {question[:120]}",
+                )
+            except Exception:
+                pass
             ans = ""
         if ans and field_type not in ("select", "radio") and not options:
             ans = QASemanticsEngine.sanitize_experience_or_duration(ans, question)

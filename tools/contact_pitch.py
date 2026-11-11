@@ -229,9 +229,25 @@ def audit_and_finalize_outreach(text: str) -> Dict[str, Any]:
     fact_res = CVFactChecker.audit_text(clean_text)
 
     combined_violations = list(dict.fromkeys(lint_res["violations"] + fact_res["violations"]))
+    passed = len(combined_violations) == 0 and not lint_res["has_em_dash"]
+    if not passed:
+        try:
+            from intelligence.mistake_router import record_mistake_if_enabled
+            sev = "high" if fact_res["violations"] else "medium"
+            record_mistake_if_enabled(
+                "outreach",
+                severity=sev,
+                category="outreach_audit_violation",
+                model_used="outreach_pipeline",
+                source="contact_pitch",
+                details="; ".join((combined_violations or ["em_dash_detected"])[:3]),
+            )
+        except Exception:
+            pass
+
     return {
         "text": clean_text,
-        "passed": len(combined_violations) == 0 and not lint_res["has_em_dash"],
+        "passed": passed,
         "violations": combined_violations,
         "burstiness": lint_res["burstiness"],
         "cliches_replaced": lint_res["cliches_replaced"],
