@@ -11,7 +11,11 @@ from pathlib import Path
 # Add project root to sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from intelligence.llm_clients.openrouter import ask
+from intelligence.llm_clients.openrouter import (
+    ask,
+    ask_local_ollama_if_online,
+    is_on_demand_enabled,
+)
 
 class DLPreFilter:
     """
@@ -124,14 +128,28 @@ CRITICAL RULES:
 FACTS:
 {filtered_facts}
 """
-    print("[DL Pre-Filter] Sending pre-filtered factual data to OpenRouter Free Tier LLM...")
-    res = ask(
-        prompt=prompt,
-        system="You are an elite executive career writer. You write grounded, punchy, authentic prose. You strictly avoid hyphens, over-excited AI openings, and corporate buzzwords. Output only the final letter directly.",
-        model="cohere/north-mini-code:free",
-        temperature=0.6,
-        max_tokens=3500
-    )
+    res = ""
+    if is_on_demand_enabled():
+        print("[DL Pre-Filter] Sending pre-filtered factual data to OpenRouter Free Tier LLM (tier=draft)...")
+        res = ask(
+            prompt=prompt,
+            system="You are an elite executive career writer. You write grounded, punchy, authentic prose. You strictly avoid hyphens, over-excited AI openings, and corporate buzzwords. Output only the final letter directly.",
+            model="cohere/north-mini-code:free",
+            task_tier="draft",
+            temperature=0.6,
+            max_tokens=3500,
+            extract_letter=True,
+        )
+    else:
+        res = ask_local_ollama_if_online(
+            prompt=prompt,
+            system="You are an elite executive career writer. Output only the final letter directly.",
+            max_tokens=1500,
+            temperature=0.6,
+        )
+        if not res:
+            print("[DL Pre-Filter] OpenRouter skipped (On-Demand Directive). Returning locally filtered facts for frontier drafting or pass --allow-openrouter.")
+            return filtered_facts
     
     # Extra safety pass: replace any remaining hyphenated compound words and eliminate fake excitement openers
     cleaned_lines = []
@@ -176,7 +194,10 @@ if __name__ == "__main__":
     parser.add_argument("--role", type=str, default="Data Analyst, Labs", help="Role Title")
     parser.add_argument("--company", type=str, default="DoorDash", help="Company Name")
     parser.add_argument("--output", type=str, default="", help="Output markdown file path")
+    parser.add_argument("--allow-openrouter", action="store_true", help="Explicitly allow OpenRouter :free drafting")
     args = parser.parse_args()
+    if args.allow_openrouter:
+        os.environ["OPENROUTER_ON_DEMAND_ENABLED"] = "1"
     
     with open(args.input, 'r', encoding='utf-8') as f:
         content = f.read()

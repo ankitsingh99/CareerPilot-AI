@@ -64,26 +64,11 @@ def _load_key() -> str:
 # ---------------------------------------------------------------------------
 
 def _post(payload: dict, stream: bool = False) -> urllib.request.Response:
-    """POST to DeepSeek chat completions endpoint."""
-    api_key = _load_key()
-    url = f"{DEEPSEEK_BASE_URL}/v1/chat/completions"
-    body = json.dumps(payload).encode()
-    req = urllib.request.Request(
-        url,
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-        method="POST",
+    """Blocked direct DeepSeek endpoint per Strict Zero-Cost Directive."""
+    raise PermissionError(
+        "Strict Zero-Cost Violation: Direct DeepSeek billable endpoint is disabled. "
+        "Route requests through OpenRouter :free endpoints or local Ollama."
     )
-    try:
-        return urllib.request.urlopen(req)  # noqa: S310
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode(errors="replace")
-        raise RuntimeError(
-            f"DeepSeek API error {exc.code}: {detail}"
-        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -98,30 +83,29 @@ def ask(
     temperature: float = 0.7,
     max_tokens: int = 2048,
 ) -> str:
-    """Send a single prompt and return the full response string.
+    """Send a single prompt via OpenRouter :free tier (billable DeepSeek direct API disabled)."""
+    from intelligence.llm_clients.openrouter import (
+        ask as or_ask,
+        ask_local_ollama_if_online,
+        DEFAULT_FREE_MODEL,
+    )
 
-    Enforces STRICT ZERO-COST DIRECTIVE: Automatically routes to OpenRouter free-tier (:free) models.
-    """
-    try:
-        from intelligence.llm_clients.openrouter import ask as or_ask, DEFAULT_FREE_MODEL
-        print(f"[deepseek] Zero-Cost Directive: Routing call to OpenRouter free model '{DEFAULT_FREE_MODEL}'")
-        return or_ask(prompt, system=system, model=DEFAULT_FREE_MODEL, max_tokens=max_tokens, temperature=temperature)
-    except Exception as exc:
-        print(f"[deepseek] Note: Could not route to OpenRouter free tier: {exc}. Attempting direct endpoint...")
+    local_ans = ask_local_ollama_if_online(
+        prompt, system=system, max_tokens=min(max_tokens, 600), temperature=temperature
+    )
+    if local_ans:
+        return local_ans
 
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-        "stream": False,
-    }
-    resp = _post(payload, stream=False)
-    data = json.loads(resp.read().decode())
-    return data["choices"][0]["message"]["content"]
+    target_model = model if model.endswith(":free") else DEFAULT_FREE_MODEL
+    print(f"[deepseek] Zero-Cost Directive: Routing call to OpenRouter free model '{target_model}'")
+    return or_ask(
+        prompt,
+        system=system,
+        model=target_model,
+        task_tier="heavy",
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
 
 
 def stream(
@@ -132,35 +116,14 @@ def stream(
     temperature: float = 0.7,
     max_tokens: int = 2048,
 ) -> Generator[str, None, None]:
-    """Stream the response token-by-token, yielding text chunks.
-
-    Example:
-        for chunk in stream("Tell me about Snowflake."):
-            print(chunk, end="", flush=True)
-    """
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-        "stream": True,
-    }
-    resp = _post(payload, stream=True)
-    for raw_line in resp:
-        line: str = raw_line.decode().strip()
-        if not line or line == "data: [DONE]":
-            continue
-        if line.startswith("data: "):
-            try:
-                chunk = json.loads(line[6:])
-                delta = chunk["choices"][0]["delta"].get("content", "")
-                if delta:
-                    yield delta
-            except (json.JSONDecodeError, KeyError):
-                continue
+    """Yield completion cleanly via OpenRouter :free tier (billable DeepSeek direct API disabled)."""
+    yield ask(
+        prompt,
+        system=system,
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
 
 
 def chat(
@@ -170,17 +133,20 @@ def chat(
     temperature: float = 0.7,
     max_tokens: int = 2048,
 ) -> str:
-    """Multi-turn chat interface. Pass the full messages list directly."""
-    payload = {
-        "model": model,
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-        "stream": False,
-    }
-    resp = _post(payload, stream=False)
-    data = json.loads(resp.read().decode())
-    return data["choices"][0]["message"]["content"]
+    """Multi-turn chat interface routed strictly through Zero-Cost Free Tier."""
+    system_msgs = [m.get("content", "") for m in messages if m.get("role") == "system"]
+    user_turns = [
+        f"{m.get('role', 'user').upper()}: {m.get('content', '')}"
+        for m in messages
+        if m.get("role") != "system"
+    ]
+    return ask(
+        "\n\n".join(user_turns),
+        system="\n".join(system_msgs) or "You are a helpful assistant.",
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -189,14 +155,14 @@ def chat(
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python tools/deepseek.py \"<your prompt>\" [model]")
-        print(f"Default model: {DEFAULT_MODEL}")
+        print("Usage: python tools/deepseek.py \"<your prompt>\" [free-model]")
         sys.exit(1)
 
+    os.environ.setdefault("OPENROUTER_ON_DEMAND_ENABLED", "1")
     _prompt = sys.argv[1]
     _model = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_MODEL
 
-    print(f"[DeepSeek / {_model}] Streaming response...\n")
+    print("[DeepSeek -> Zero-Cost Router] Running response...\n")
     for _chunk in stream(_prompt, model=_model):
         print(_chunk, end="", flush=True)
     print()

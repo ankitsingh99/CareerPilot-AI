@@ -70,6 +70,14 @@ python tools/linkedin_easy_apply_runner.py 5 --location "India"
 
 ```bash
 python tools/ats_runner.py --url "<JOB_URL>" --mode apply
+# Optional: enable on-demand :free OpenRouter fallback for novel questions
+python tools/ats_runner.py --url "<JOB_URL>" --mode apply --allow-openrouter
+```
+
+### Generate JD-Matched LinkedIn & Email Outreach
+
+```bash
+python tools/contact_pitch.py --url "<JOB_URL>" --company "<Company>" --role "<Role>" --type referral
 ```
 
 ### Poll Target Job Boards
@@ -91,8 +99,8 @@ python tools/sync_tracker.py
 This project is built and maintained by **Ankit Kumar Singh** (ex-ZS Associates Data & Analytics Consultant), integrating modern AI coding assistants (Google Antigravity, Claude Code) as pair-programming accelerators.
 
 Our engineering standards:
-- **Domain-Driven Heuristics**: Automation is grounded in enterprise data engineering practices—schema idempotency, deterministic deduplication (`job_key.py`), and zero-PII data isolation inspired by commercial healthcare data compliance.
-- **Deterministic Over Generative**: High-precision regex rules, localized knowledge bases, and SQLite response caching handle 99% of screening workflows in `<1ms`. LLMs route strictly to free-tier endpoints and serve as a fallback for open-ended textareas.
+- **Domain-Driven Heuristics**: Automation is grounded in enterprise data engineering practices: schema idempotency, deterministic deduplication (`job_key.py`), and zero-PII data isolation inspired by commercial healthcare data compliance.
+- **Deterministic Over Generative**: High-precision regex rules, `OnDeviceParser`, localized knowledge bases, local Ollama fallback (when running), and SQLite response caching handle 99% of screening workflows in `<1ms`. Remote LLM calls require explicit opt-in (`OPENROUTER_ON_DEMAND_ENABLED=1` or `--allow-openrouter`) and enforce tiered `:free` models (`--tier chore` vs `--tier draft`/`--tier heavy`), with billable endpoints blocked.
 - **Strict Verification**: Every automated change must pass the 5-tier quality gate (`tools/quality_gate.sh`) including automated PII leak auditing, SSRF guards, and unit tests before merging.
 - **Human in the Loop**: Browser automation operates headed and never closes automatically; human sign-off is required before final submission.
 

@@ -152,7 +152,7 @@ def save_novel_qa_to_kb(question: str, answer: str, category: str = "openrouter_
 
 
 def ask_openrouter_free_llm(question: str, options: Optional[List[str]] = None, field_type: str = "text") -> str:
-    """Query OpenRouter strictly on zero-cost free tier (:free) to resolve complex ATS questions."""
+    """Resolve complex ATS questions: Local Ollama (offline) -> OpenRouter :free (on-demand only)."""
     cache_key = f"{field_type}::{question.strip().lower()}::{'|'.join(options or [])}"
     if cache_key in _SEMIN_CACHE:
         return _SEMIN_CACHE[cache_key]
@@ -160,7 +160,11 @@ def ask_openrouter_free_llm(question: str, options: Optional[List[str]] = None, 
     cand = load_candidate_context()
 
     try:
-        from intelligence.llm_clients.openrouter import ask
+        from intelligence.llm_clients.openrouter import (
+            ask,
+            ask_local_ollama_if_online,
+            is_on_demand_enabled,
+        )
     except ImportError:
         return ""
     system_prompt = (
@@ -195,8 +199,26 @@ def ask_openrouter_free_llm(question: str, options: Optional[List[str]] = None, 
         else:
             user_prompt += "Return ONLY the concise exact value to type into the field."
 
+    task_tier = "draft" if field_type == "textarea" else "chore"
+    max_tok = 180 if field_type == "textarea" else 80
+
     try:
-        response = ask(user_prompt, system=system_prompt, model="auto", max_tokens=150)
+        # Tier 1: Zero-external-token local Ollama inference if running
+        response = ask_local_ollama_if_online(
+            user_prompt, system=system_prompt, max_tokens=max_tok, temperature=0.2
+        )
+        # Tier 2: Cheaper/heavy :free OpenRouter tier strictly when opted in on-demand
+        if not response:
+            if not is_on_demand_enabled():
+                return ""
+            response = ask(
+                user_prompt,
+                system=system_prompt,
+                model="auto",
+                task_tier=task_tier,
+                max_tokens=max_tok,
+            )
+
         raw = response.strip()
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
@@ -212,6 +234,8 @@ def ask_openrouter_free_llm(question: str, options: Optional[List[str]] = None, 
         ans = clean_lines[-1].strip('"').strip("'").strip() if clean_lines else (lines[-1].strip('"').strip("'").strip() if lines else raw.strip('"').strip("'").strip())
         if field_type != "textarea" and (len(ans) > 70 or any(w in ans.lower() for w in ["we need", "candidate", "instruction", "constraint", "field label", "preferred name", "likely"])):
             ans = ""
+        if ans and field_type not in ("select", "radio") and not options:
+            ans = QASemanticsEngine.sanitize_experience_or_duration(ans, question)
         if ans:
             if options:
                 ans_lower = ans.lower().strip()
@@ -678,11 +702,14 @@ class QASemanticsEngine:
             return cand["linkedin"]
         if any(k in lbl for k in ["github", "portfolio", "git url", "code repository"]):
             return cand["github"]
-        if any(k in lbl for k in [
-            "city", "current location", "residence city", "place of residence", "residing city",
+        if any(k in lbl for k in ["country of residence", "residence country", "current country", "what country"]):
+            return cand.get("country", "India")
+
+        if (any(k in lbl for k in [
+            "current location", "residence city", "place of residence", "residing city",
             "where do you reside", "where do you currently reside", "where do you live",
             "current residence", "location of residence"
-        ]):
+        ]) or re.search(r"\bcity\b", lbl)) and not any(k in lbl for k in ["race", "ethnicity", "capacity"]):
             if options:
                 for opt in options:
                     if "noida" in opt.lower():
@@ -693,7 +720,7 @@ class QASemanticsEngine:
                 for opt in options:
                     if "india" in opt.lower():
                         return opt
-            if "city" in lbl and not any(k in lbl for k in ["state", "country", "address", "where", "reside", "live"]):
+            if re.search(r"\bcity\b", lbl) and not any(k in lbl for k in ["state", "country", "address", "where", "reside", "live"]):
                 return cand["city"]
             return f"{cand['city']}, {cand['state']}, {cand['country']}"
         if any(k in lbl for k in ["postal", "zip", "pincode", "pin code", "postal code"]):
@@ -702,6 +729,8 @@ class QASemanticsEngine:
             return cand["address"]
         if (any(k in lbl for k in ["gender", "what is your gender", "biological sex", "gender identity"]) or re.search(r"\bsex\b", lbl)) and "sexual" not in lbl and "orientation" not in lbl:
             return "Male"
+        if any(k in lbl for k in ["race", "ethnicity", "ethnic origin"]):
+            return "Asian"
 
         # ── 5.5 PROFESSIONAL REFERENCES (STRICT ZERO-FABRICATION RULE) ───────────
         # Consent/permission to contact references is Yes, but candidate has not provided
@@ -815,12 +844,14 @@ class QASemanticsEngine:
         # Negative compliance & demographic questions (Always 'No')
         if any(k in lbl for k in [
             "visa sponsorship", "require sponsorship", "need sponsorship", "require visa",
-            "future sponsorship", "employee referral", "referred by", "personal relationship",
+            "future sponsorship", "employer-sponsored", "employer sponsored",
+            "employee referral", "referred by", "personal relationship",
             "current employee", "know anyone", "family member", "relative",
+            "current or former", "previously employed", "previous employment",
+            "mindbody", "classpass", "egym", "booker",
             "felony", "criminal", "convicted", "crime", "misdemeanor",
             "non-compete", "non compete", "non-solicitation", "restrictive agreement",
-            "worked with", "worked before", "previously employed", "previous employment",
-            "associate / subsidiary", "worked for", "employee id",
+            "worked with", "worked before", "associate / subsidiary", "worked for", "employee id",
             "physical ailment", "state of health", "medical condition", "maternity leave", "on leave during last 12 months",
             "appeared for an interview", "interview at any", "interviewed with", "interviewed during", "interview in last",
             "lgbtq", "identify as lgbtq", "sexual orientation", "veteran", "military", "disability", "disabled"
@@ -829,13 +860,16 @@ class QASemanticsEngine:
 
         # Positive compliance questions (Always 'Yes')
         if any(k in lbl for k in [
-            "authorized to work in india", "authorized to work", "legally authorized", "right to work",
+            "eligible to work", "authorized to work in india", "authorized to work", "legally authorized", "right to work",
             "relocate", "relocation", "hybrid", "onsite", "in-office", "5 days onsite", "five days onsite", "remote",
+            "open for 6 months contract", "open for contract", "contractor", "open for a contract",
+            "exp in dbt and snowflake", "dbt and snowflake", "exp in dbt", "dbt", "snowflake",
             "travel", "willing to travel", "rotational", "flexible hours", "timezones",
             "us hours", "shift", "shifts", "night shift", "night shifts", "background check", "drug test",
             "passport", "valid passport", "indian passport",
             "agree to", "consent", "privacy policy", "terms and conditions", "gdpr",
-            "talent community", "receive alerts", "future job alerts"
+            "talent community", "receive alerts", "future job alerts",
+            "text messages", "receive sms", "consent to receive text"
         ]):
             return "Yes"
 

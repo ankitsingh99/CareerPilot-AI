@@ -313,73 +313,17 @@ def save_to_qa_knowledge_base(question: str, answer: str):
 
 
 def ask_openrouter_free(question: str, options: Optional[List[str]] = None, field_type: str = "text") -> str:
-    """Query OpenRouter zero-cost free models to answer ATS screening questions."""
+    """Delegate ATS screening Q&A to shared QASemanticsEngine tiered router (Ollama -> on-demand OpenRouter :free)."""
     cache_key = f"{field_type}::{question.strip().lower()}::{'|'.join(options or [])}"
     if cache_key in _QA_CACHE:
         return _QA_CACHE[cache_key]
 
     try:
-        from intelligence.llm_clients.openrouter import ask
-    except ImportError:
-        return ""
-
-    context = get_candidate_context_summary()
-    system_prompt = (
-        "You are an ATS job application form filler representing the candidate.\n"
-        "Your duty is to output ONLY the exact, factual string to enter or select into the form.\n"
-        "Do NOT provide explanations, pleasantries, markdown, or commentary.\n"
-        "CRITICAL RULE: Whenever experience, tenure, or duration is asked (e.g. years of experience, days notice, joining time, duration with a tool), "
-        "NEVER write 'year', 'month', 'day', or decimals. Just write the integer value (e.g. 4 or 0).\n"
-        f"{context}"
-    )
-
-    user_prompt = f"Field Question: {question}\nField Type: {field_type}\n"
-    if options:
-        user_prompt += "Available Options:\n" + "\n".join(f"- {opt}" for opt in options) + "\n"
-        user_prompt += "Select and return ONLY the single exact option text from the list that best matches the candidate."
-    else:
-        if field_type == "number":
-            user_prompt += "Return ONLY a single numeric value (e.g., 4 or 0)."
-        else:
-            user_prompt += "Return ONLY the concise exact value to type into the field."
-
-    try:
-        # Strictly use zero-cost free models
-        response = ask(user_prompt, system=system_prompt, model="auto", max_tokens=100)
-        raw = response.strip()
-        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
-        lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
-        clean_lines = []
-        for ln in lines:
-            cl = re.sub(r"^[\*\-•\d\.\s]+", "", ln).strip()
-            cl = re.sub(r"^\*\*.*?\*\*:?\s*", "", cl).strip()
-            if cl and not any(cl.lower().startswith(p) for p in [
-                "we need", "so for", "field question", "the instruction", "constraint",
-                "candidate", "i would", "here is", "likely", "probably", "note:", "output:"
-            ]):
-                clean_lines.append(cl)
-        ans = clean_lines[-1].strip('"').strip("'").strip() if clean_lines else (lines[-1].strip('"').strip("'").strip() if lines else raw.strip('"').strip("'").strip())
-        if field_type != "textarea" and (len(ans) > 70 or any(w in ans.lower() for w in ["we need", "candidate", "instruction", "constraint", "field label", "preferred name", "likely"])):
-            ans = ""
-        if ans and field_type not in ("select", "radio"):
-            # Enforce integer-only for duration / experience questions
-            unit_match = re.match(r"^\s*(\d+(?:\.\d+)?)\s*(?:years?|yrs?|months?|mos?|days?)\s*$", ans, re.IGNORECASE)
-            if unit_match:
-                try:
-                    ans = str(int(float(unit_match.group(1))))
-                except ValueError:
-                    pass
-            elif any(k in question.lower() for k in ["experience", "yoe", "how many years", "how many days", "days notice"]):
-                m_dig = re.search(r"\b(\d+(?:\.\d+)?)\b", ans)
-                if m_dig:
-                    try:
-                        ans = str(int(float(m_dig.group(1))))
-                    except ValueError:
-                        pass
+        from core.qa_semantics_engine import ask_openrouter_free_llm
+        ans = ask_openrouter_free_llm(question, options=options, field_type=field_type)
         if ans:
             _QA_CACHE[cache_key] = ans
             save_to_qa_knowledge_base(question, ans)
-            print(f"  [OpenRouter Free QA] '{question[:40]}...' => '{ans}'")
             return ans
     except Exception as e:
         print(f"  [OpenRouter Free QA Note] {e}")
@@ -1026,13 +970,14 @@ def apply_to_current_job(page: Page, review_only: bool = False) -> bool:
         print("  [!] All available submissions for today have been completed.")
         print("  [!] Halting automation immediately per Rule 2.5 to protect account standing.")
         print("=" * 65 + "\n")
-        alert("LinkedIn Daily Limit", "You reached today’s Easy Apply limit on LinkedIn. Automation halted safely.")
         try:
-            got_it = modal.query_selector("button:has-text('Got it'), button[aria-label='Dismiss']")
-            if got_it:
-                got_it.click()
-        except Exception:
-            pass
+            shot_path = ROOT_DIR / "documents" / "linkedin_daily_limit.png"
+            shot_path.parent.mkdir(parents=True, exist_ok=True)
+            page.screenshot(path=str(shot_path))
+            print(f"  [+] Saved limit modal screenshot to: {shot_path}")
+        except Exception as se:
+            print(f"  [!] Screenshot note: {se}")
+        alert("LinkedIn Daily Limit", "You reached today’s Easy Apply limit on LinkedIn. Automation halted safely.")
         raise RuntimeError("LINKEDIN_DAILY_LIMIT_REACHED")
 
     review_clicked = False
@@ -1709,6 +1654,11 @@ def run(
 ):
     global RESUME_PATH
     load_env()
+    try:
+        from intelligence.llm_clients.openrouter import reset_session_token_usage
+        reset_session_token_usage()
+    except Exception:
+        pass
 
     active_company_blacklist = set(c.lower() for c in DEFAULT_COMPANY_BLACKLIST)
     if company_blacklist:
@@ -1846,10 +1796,11 @@ def run(
     print(f"[Tracker] Loaded {len(applied_urls)} previously applied records for deduplication.")
 
     applied = 0
+    limit_reached = False
 
     # Step 3: Iterate through locations and designation clusters
     for loc in locations_to_scan:
-        if (review_only and applied > 0) or applied >= target or (not override_daily_limit and (today_applied + applied) >= DAILY_EASY_APPLY_LIMIT):
+        if limit_reached or (review_only and applied > 0) or applied >= target or (not override_daily_limit and (today_applied + applied) >= DAILY_EASY_APPLY_LIMIT):
             break
 
         print(f"\n{'#'*65}")
@@ -1857,7 +1808,7 @@ def run(
         print(f"{'#'*65}")
 
         for kw in queries_to_scan:
-            if (review_only and applied > 0) or applied >= target or (not override_daily_limit and (today_applied + applied) >= DAILY_EASY_APPLY_LIMIT):
+            if limit_reached or (review_only and applied > 0) or applied >= target or (not override_daily_limit and (today_applied + applied) >= DAILY_EASY_APPLY_LIMIT):
                 break
 
             canonical_loc, geo_id = resolve_linkedin_geo(loc)
@@ -2087,7 +2038,8 @@ def run(
                             except RuntimeError as re_err:
                                 if "LINKEDIN_DAILY_LIMIT_REACHED" in str(re_err):
                                     print("\n[!] Halting scan loop: LinkedIn account daily Easy Apply quota reached for today.")
-                                    return
+                                    limit_reached = True
+                                    break
                                 raise
                             if ok:
                                 if review_only:
@@ -2126,6 +2078,9 @@ def run(
                     break
 
                 print(f"[Scan] {len(job_ids)} listings found on page {page_num}.")
+
+                if limit_reached:
+                    break
 
                 for jid in job_ids:
                     if applied >= target:
@@ -2279,7 +2234,7 @@ def run(
                         clear_all_overlays(page)
                         time.sleep(1)
 
-                if review_only and applied > 0:
+                if limit_reached or (review_only and applied > 0):
                     break
 
                 if hasattr(page, "is_closed") and page.is_closed():
@@ -2314,6 +2269,12 @@ def run(
     print(f"  • Browser: Preserved interactive per Rule 2.3.")
     print(f"{'='*55}\n")
 
+    try:
+        from intelligence.llm_clients.openrouter import print_token_benchmark
+        print_token_benchmark()
+    except Exception:
+        pass
+
     if keep_open:
         print("[Rule 2.3 Directive] Browser remains permanently open and interactive on display.")
         print("[Status] Automation completed. Browser window is active.")
@@ -2342,7 +2303,10 @@ if __name__ == "__main__":
     parser.add_argument("--override-daily-limit", action="store_true", help="Bypass the daily Easy Apply safety limit of 40")
     parser.add_argument("--review-only", action="store_true", help="Populate the Easy Apply form and pause at review screen without clicking Submit")
     parser.add_argument("--no-remote", action="store_true", help="Exclude remote jobs (filter to onsite & hybrid only)")
+    parser.add_argument("--allow-openrouter", action="store_true", help="Explicitly enable OpenRouter :free API calls on-demand (Default: False)")
     args = parser.parse_args()
+    if args.allow_openrouter:
+        os.environ["OPENROUTER_ON_DEMAND_ENABLED"] = "1"
 
     target_count = args.count_flag if args.count_flag is not None else args.count
 

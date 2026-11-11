@@ -508,8 +508,31 @@ def append_job_locally(
     conn.commit()
     conn.close()
 
-    # 2. Sync to CSV
-    sync_csv_to_db(csv_path=csv_path, db_path=db_path)
+    # 2. Append to CSV if not already present
+    row_dict = {
+        "date": today,
+        "company": company,
+        "sector": sector,
+        "role": role,
+        "role_type": role_type,
+        "channel": channel,
+        "status": status,
+        "contact_person": "",
+        "fit_rating": fit_rating,
+        "notes": notes,
+        "cv_file": cv_file,
+        "cover_letter_file": cover_letter_file,
+        "source": resolved_url,
+        "deadline": deadline,
+        "recruiter_search_link": recruiter_link
+    }
+    file_exists = csv_path.exists()
+    with open(csv_path, mode="a", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+        if not file_exists or os.path.getsize(csv_path) == 0:
+            writer.writeheader()
+        writer.writerow(row_dict)
+
     print(f"Successfully tracked '{company} - {role}' in CSV & SQLite DB (Recruiter Link: {recruiter_link})")
 
 def main():

@@ -55,8 +55,12 @@ def classify_ats_vendor(raw_url: str) -> Optional[str]:
     try:
         parsed = urlparse(url)
         host = (parsed.hostname or "").lower()
+        query = (parsed.query or "").lower()
         if not host:
             return None
+        
+        if "gh_jid" in query or "gh_jid" in url.lower():
+            return "greenhouse"
         
         for vendor_id, test_fn in ATS_VENDORS:
             if test_fn(host):

@@ -15,6 +15,20 @@ per-file diff commands.
 
 ### Added
 
+- **JD-matched LinkedIn and email outreach engine and skill**
+  (`tools/contact_pitch.py`, `.agents/skills/linkedin-and-email-outreach/SKILL.md`,
+  `.agents/skills/linkedin-and-email-outreach/references/outreach_examples.md`,
+  `tests/test_contact_pitch.py`) - generates referral requests, peer LinkedIn DMs,
+  connection invites, and soft HR application emails grounded in verified CV metrics,
+  SSRF-guarded JD fetching, and local anti-slop linting.
+
+- **Tiered zero-cost model routing and opt-in on-demand gate**
+  (`intelligence/llm_clients/openrouter.py`, `tests/test_openrouter.py`) - adds
+  `CHORE_FREE_MODELS` vs `HEAVY_FREE_MODELS` task-tier selection (`--tier chore|heavy`),
+  zero-external-token local Ollama fallback (`ask_local_ollama_if_online`),
+  `OPENROUTER_ON_DEMAND_ENABLED` enforcement (`--allow-openrouter` across runners and
+  linters), and isolated cover-letter post-processing (`extract_letter=True`).
+
 - **Real Excel workbook integration tests for the salary converter**
   (`tests/test_convert_salary_excel_integration.py`, `.github/workflows/ci.yml`) -
   generate temporary `.xlsx` files and invoke the documented converter CLI,
@@ -71,6 +85,21 @@ per-file diff commands.
 
 ### Changed
 
+- **Wired local job pre-filtering and OnDeviceParser into job discovery**
+  (`tools/research_jobs.py`, `tools/check_career_sites.py`, `tests/test_research_jobs.py`) -
+  scores and filters discovered ATS postings locally via `score_job_locally` and
+  `OnDeviceParser.evaluate_seniority_and_relevance` without LLM tokens, removes dead
+  duplicate return blocks, and routes unknown-domain classification in
+  `tools/check_career_sites.py` from deterministic hints to local Ollama to gated
+  `openrouter.ask(..., task_tier="chore")` instead of raw `curl`.
+
+- **Shared ATS Q&A fallback and Greenhouse iframe/`gh_jid` handling**
+  (`core/qa_semantics_engine.py`, `tools/linkedin_easy_apply_runner.py`,
+  `core/ats_classifier.py`, `automation/browser.py`, `core/tracker.py`) - deduplicates
+  `ask_openrouter_free` into `QASemanticsEngine`, adds token benchmark reporting to Easy
+  Apply runs, detects `gh_jid` and embedded Greenhouse iframes, and appends applied rows
+  directly to `job_search_tracker.csv` + SQLite.
+
 - **`/add-template` keeps a registered template's intermediates in `build/`**
   (#473, `.claude/commands/add-template.md`, `.gitignore`,
   `tests/test_add_template_build_dir.py`) - the elicited compile command
@@ -83,6 +112,11 @@ per-file diff commands.
   its Step 5e cleanup. Stock templates are unchanged.
 
 ### Fixed
+
+- **Disabled billable DeepSeek direct API fallback** (`intelligence/llm_clients/deepseek.py`,
+  `tests/test_openrouter.py`) - removed the fallback to `https://api.deepseek.com` on
+  OpenRouter errors and blocked direct `_post()` calls so automation strictly honors the
+  Zero-Cost Directive.
 
 - **`linkedin-search detail` no longer fetches an unrelated posting for a URL on another
   host** - `normalizeId` took the first 6+-digit path segment from *any* URL, so a

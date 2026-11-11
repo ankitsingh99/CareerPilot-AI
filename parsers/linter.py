@@ -181,13 +181,16 @@ def audit_profile_integrity(text: str) -> List[str]:
 
 def proofread_with_openrouter(text: str, role_title: str = "", company: str = "") -> Dict[str, Any]:
     """
-    Tier 2: LLM Proofreading pass via OpenRouter Zero-Cost Free Tier.
+    Tier 2: LLM Proofreading pass via OpenRouter Zero-Cost Free Tier (on-demand only).
     Audits grammar, restores missing quantified metrics, and validates flow.
     """
     try:
-        from intelligence.llm_clients.openrouter import ask
+        from intelligence.llm_clients.openrouter import ask, is_on_demand_enabled
     except ImportError:
         return {"success": False, "proofread_text": text, "error": "OpenRouter client unavailable"}
+
+    if not is_on_demand_enabled():
+        return {"success": False, "proofread_text": text, "error": "OpenRouter skipped (On-Demand Directive disabled)"}
 
     prompt = f"""
 Proofread and audit the following cover letter for the role '{role_title}' at '{company}'.
@@ -207,8 +210,10 @@ TEXT:
             prompt=prompt,
             system="You are an expert editorial proofreader and career communications specialist. Output only the final proofread text directly.",
             model="cohere/north-mini-code:free",
+            task_tier="draft",
             temperature=0.3,
-            max_tokens=3000
+            max_tokens=3000,
+            extract_letter=True,
         )
         # Verify result is non-empty
         if proofread and len(proofread.strip()) > 100:

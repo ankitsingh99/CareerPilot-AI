@@ -2,28 +2,26 @@
 """Iterate over career site accounts and determine whether each is a known
 site or a new one.
 
-The script reads `user_inputs/candidate_accounts.json` and optionally a file
-`user_inputs/known_career_sites.json` (a simple JSON list of domain strings).
-For any account whose domain is not present in the known list, the script calls
-the free OpenRouter model `google/gemma-2-9b-it:free` to ask the model if the
-URL is a career‑site / job‑application portal. The result is printed and the
-new domain is added to the known list for future runs.
-
-Credentials (usernames / passwords) are **not** sent – only the domain is
-used. The OpenRouter API key must be stored in an environment variable
-`OPENROUTER_API_KEY` (git‑ignored `.env`).
+Evaluates URLs deterministically first (0 tokens), then via local Ollama if
+running offline, and finally via OpenRouter `:free` (chore tier) only when
+explicitly opted in (`--allow-openrouter` or `OPENROUTER_ON_DEMAND_ENABLED=1`).
 """
+import argparse
 import json
 import os
-import subprocess
+import sys
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(BASE_DIR))
 ACCOUNTS_PATH = BASE_DIR / "user_inputs" / "candidate_accounts.json"
 KNOWN_PATH = BASE_DIR / "user_inputs" / "known_career_sites.json"
 
-OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
-MODEL = "google/gemma-2-9b-it:free"
+KNOWN_CAREER_DOMAIN_HINTS = (
+    "greenhouse.io", "lever.co", "myworkdayjobs.com", "smartrecruiters.com",
+    "ashbyhq.com", "taleo.net", "successfactors", "icims.com",
+    "bamboohr.com", "workable.com", "jobs.", "careers.", "apply.", "hire.",
+)
 
 def load_known():
     if KNOWN_PATH.is_file():
@@ -33,35 +31,43 @@ def load_known():
 def save_known(domains):
     KNOWN_PATH.write_text(json.dumps(sorted(list(domains)), indent=2))
 
-def query_model(domain):
-    prompt = f"Is the website https://{domain} a career or job application portal? Respond with only ""yes"" or ""no""."
-    payload = {
-        "model": MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.0,
-        "max_tokens": 10
-    }
-    # Use curl to avoid adding external dependencies
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
-        raise EnvironmentError("OPENROUTER_API_KEY not set in environment")
-    curl_cmd = [
-        "curl", "-s", "-X", "POST", OPENROUTER_ENDPOINT,
-        "-H", f"Authorization: Bearer {api_key}",
-        "-H", "Content-Type: application/json",
-        "-d", json.dumps(payload)
-    ]
-    result = subprocess.run(curl_cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"Curl failed: {result.stderr}")
-    try:
-        resp = json.loads(result.stdout)
-        answer = resp["choices"][0]["message"]["content"].strip().lower()
-        return answer.startswith("yes")
-    except Exception as e:
-        raise RuntimeError(f"Failed to parse OpenRouter response: {e}")
+def query_model(domain: str) -> bool:
+    """Classify domain locally first, then Ollama, then gated OpenRouter :free chore tier."""
+    dom_l = (domain or "").strip().lower()
+    if any(hint in dom_l for hint in KNOWN_CAREER_DOMAIN_HINTS):
+        return True
+
+    from intelligence.llm_clients.openrouter import (
+        ask,
+        ask_local_ollama_if_online,
+        is_on_demand_enabled,
+    )
+
+    prompt = f"Is the website https://{domain} a career or job application portal? Respond with only yes or no."
+    local_ans = ask_local_ollama_if_online(prompt, max_tokens=10, temperature=0.0)
+    if local_ans:
+        return local_ans.strip().lower().startswith("yes")
+
+    if not is_on_demand_enabled():
+        raise PermissionError("OpenRouter disabled (pass --allow-openrouter to classify unknown domain).")
+
+    answer = ask(
+        prompt,
+        system="Respond strictly with 'yes' or 'no'.",
+        model="auto",
+        task_tier="chore",
+        temperature=0.0,
+        max_tokens=10,
+    ).strip().lower()
+    return answer.startswith("yes")
 
 def main():
+    parser = argparse.ArgumentParser(description="Classify career-site domains locally or via gated :free tier")
+    parser.add_argument("--allow-openrouter", action="store_true", help="Enable OpenRouter :free chore classification for unknown domains")
+    args = parser.parse_args()
+    if args.allow_openrouter:
+        os.environ["OPENROUTER_ON_DEMAND_ENABLED"] = "1"
+
     if not ACCOUNTS_PATH.is_file():
         raise FileNotFoundError(f"Accounts file not found: {ACCOUNTS_PATH}")
     data = json.loads(ACCOUNTS_PATH.read_text())

@@ -1,5 +1,5 @@
 # AI Job Search: Session Handoff Document
-**Last Updated:** 2026-11-08 19:15:00 IST  
+**Last Updated:** 2026-11-11 11:32:00 IST  
 **Active Git Branch / Commit:** `master` @ `origin/master` (Universal Automation Framework v1.2.0)  
 **Repository Visibility:** Public ([https://github.com/ankitsingh99/ai-job-search](https://github.com/ankitsingh99/ai-job-search))  
 **Model Context Status:** Optimal (Clean Context Handoff - Ready for New Session)  
@@ -7,6 +7,12 @@
 ---
 
 ## 1. Executive Summary & Current Accomplishments
+
+### 0. Token-Lean Routing, Outreach Engine & Cost Hardening (2026-11-11)
+- **Tiered Free Model Routing & On-Demand Gate:** Updated `intelligence/llm_clients/openrouter.py` with `CHORE_FREE_MODELS` vs `HEAVY_FREE_MODELS` routing (`--tier chore|heavy`), local Ollama offline fallback (`ask_local_ollama_if_online`), explicit `OPENROUTER_ON_DEMAND_ENABLED` (`--allow-openrouter`) gate, and extracted `extract_cover_letter_text()` out of generic `ask()`.
+- **Billable Endpoint Hardening:** Disabled `api.deepseek.com` fallback in `intelligence/llm_clients/deepseek.py`, replaced raw `curl` in `tools/check_career_sites.py` with deterministic domain matching + gated `:free` client, and wired `--allow-openrouter` across `automation/browser.py`, `tools/linkedin_easy_apply_runner.py`, `tools/dl_humanizer_prefilter.py`, and `parsers/linter.py`.
+- **Local Job Filtering & QA Deduplication:** Wired `score_job_locally` and `OnDeviceParser.evaluate_seniority_and_relevance` into `tools/research_jobs.py` (removing unreachable blocks), and unified `ask_openrouter_free` into `core/qa_semantics_engine.py`.
+- **JD-Matched Outreach Engine & Greenhouse Fixes:** Added reusable `tools/contact_pitch.py`, `.agents/skills/linkedin-and-email-outreach/`, `tests/test_contact_pitch.py`, `gh_jid` / iframe handling in `core/ats_classifier.py` and `automation/browser.py`, and direct CSV append sync in `core/tracker.py`.
 
 ### 1. Integration of Best-of-Breed LinkedIn Open-Source Capabilities
 Integrated verified patterns from `nicolomantini/LinkedIn-Easy-Apply-Bot` and `GodsScion/Auto_job_applier_linkedIn` directly into universal framework modules (`tools/linkedin_easy_apply_runner.py` and `core/qa_semantics_engine.py`):

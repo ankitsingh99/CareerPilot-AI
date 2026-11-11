@@ -42,14 +42,6 @@ def _lazy_import_pollers():
         "smartrecruiters": boards.poll_smartrecruiters,
     }
 
-    from discovery.ats_discovery import boards
-    return {
-        "greenhouse": boards.poll_greenhouse,
-        "lever": boards.poll_lever,
-        "ashby": boards.poll_ashby,
-        "smartrecruiters": boards.poll_smartrecruiters,
-    }
-
 # ---------------------------------------------------------------------------
 # Helper: extract keywords from past job titles/roles.
 # ---------------------------------------------------------------------------
@@ -95,21 +87,17 @@ def is_india_location(loc: str) -> bool:
         if term in loc_lower:
             return False
     return True
-    if not loc:
-        return False
-    loc_lower = loc.lower()
-    # Accept anything that mentions India and does not contain remote indicators.
-    return "india" in loc_lower and "remote" not in loc_lower
 
 # ---------------------------------------------------------------------------
 # Main discovery function.
 # ---------------------------------------------------------------------------
 def discover_jobs(keywords: Set[str]) -> List[Dict[str, str]]:
-    """Query public ATS pollers and return matching job dicts.
-
-    Each dict contains ``company``, ``title`` and ``apply_url``.
-    """
+    """Query public ATS pollers, score/filter locally via prefilter + OnDeviceParser, and return matches."""
     pollers = _lazy_import_pollers()
+    from intelligence.prefilter import score_job_locally
+    from parsers.document import OnDeviceParser
+
+    doc_parser = OnDeviceParser()
     results: List[Dict[str, str]] = []
     # Load past companies to limit poller scope – the CSV contains a ``company`` column.
     tracker_path = Path("user_inputs/job_search_tracker.csv")
@@ -126,32 +114,39 @@ def discover_jobs(keywords: Set[str]) -> List[Dict[str, str]]:
         for name, poller in pollers.items():
             try:
                 for job in poller(slug):
-                    title = job.get("title", "").lower()
+                    raw_title = job.get("title", "")
+                    title = raw_title.lower()
                     if not any(kw in title for kw in keywords):
                         continue
                     if not is_india_location(job.get("location", "")):
                         continue
+                    desc = job.get("description", "") or ""
+                    guard = doc_parser.evaluate_seniority_and_relevance(raw_title, desc)
+                    if guard.get("is_strictly_excluded") or not guard.get("passed_gate", True):
+                        continue
+                    local_score = score_job_locally(raw_title, desc)
                     apply_url = job.get("apply_url") or job.get("url")
                     if not apply_url:
                         continue
-                    # Optional liveness check – cheap, no network cost guard.
                     results.append({
                         "company": job.get("company", company),
-                        "job_title": job.get("title", ""),
+                        "job_title": raw_title,
                         "application_url": apply_url,
+                        "local_fit_score": str(local_score),
                     })
             except Exception as e:
-                # Fail‑soft – a single poller failure should not abort the whole run.
+                # Fail-soft: a single poller failure should not abort the whole run.
                 print(f"[research_jobs] Poller {name} for slug '{slug}' failed: {e}", file=sys.stderr)
+    results.sort(key=lambda r: float(r.get("local_fit_score", "0")), reverse=True)
     return results
 
 # ---------------------------------------------------------------------------
 # Write CSV output.
 # ---------------------------------------------------------------------------
 def write_results_csv(records: Iterable[Dict[str, str]], out_path: Path) -> None:
-    fieldnames = ["company", "job_title", "application_url"]
+    fieldnames = ["company", "job_title", "application_url", "local_fit_score"]
     with out_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         for rec in records:
             writer.writerow(rec)

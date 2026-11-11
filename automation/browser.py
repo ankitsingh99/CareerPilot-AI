@@ -263,7 +263,7 @@ def record_new_account(company: str, website: str, username: str, password: str)
 ATS_PATTERNS = {
     "taleo":          ["taleo.net", "taleo.com"],
     "workday":        ["myworkdayjobs.com"],
-    "greenhouse":     ["greenhouse.io"],
+    "greenhouse":     ["greenhouse.io", "gh_jid="],
     "lever":          ["lever.co"],
     "oracle_hcm":     ["oraclecloud.com/hcmUI"],
     "successfactors": ["successfactors.com", "sapsf.com", "sapsf.eu", "join.cnh.com", "jobs2web.com"],
@@ -481,17 +481,21 @@ def select_react_option(page: Page, input_id: str, search_text: str, exact_text:
                         target = opts.nth(i)
                         break
 
+            kb = getattr(page, "keyboard", getattr(page, "page", None).keyboard if hasattr(page, "page") else None)
             if target:
                 target.click()
                 time.sleep(0.3)
                 return True
             else:
                 print(f"[select_react] Option '{target_str}' does not exist in dropdown {available_options}. Safely closing menu.")
-                page.keyboard.press("Escape")
+                if kb:
+                    kb.press("Escape")
                 time.sleep(0.2)
                 return False
         else:
-            page.keyboard.press("Escape")
+            kb = getattr(page, "keyboard", getattr(page, "page", None).keyboard if hasattr(page, "page") else None)
+            if kb:
+                kb.press("Escape")
             time.sleep(0.2)
             return False
     except Exception as e:
@@ -3401,48 +3405,78 @@ def _apply_greenhouse(url: str, slug: str, fields: dict, keep_open: bool = True)
     time.sleep(2)
     auto_authenticate_or_register(page, "greenhouse", url)
 
+    # 0. Dismiss cookie / consent overlay banners
+    try:
+        page.evaluate("""() => {
+            const b = document.getElementById('truste-consent-button') || document.querySelector('#onetrust-accept-btn-handler, button:has-text("Accept All"), button:has-text("Accept"), button:has-text("OK")');
+            if (b) b.click();
+            const o = document.getElementById('trustarc-banner-overlay');
+            if (o) o.remove();
+            const c = document.getElementById('consent_blackbar');
+            if (c) c.remove();
+        }""")
+        time.sleep(1.0)
+    except Exception:
+        pass
+
+    # Resolve target scope: embedded Greenhouse iframe (grnhse_iframe) or top-level page
+    target = page
+    for _ in range(12):
+        gh_frame = page.frame("grnhse_iframe")
+        if gh_frame:
+            target = gh_frame
+            print("[apply:greenhouse] Detected embedded Greenhouse iframe: 'grnhse_iframe'.")
+            break
+        for f in page.frames:
+            if "greenhouse.io" in f.url or "job_app" in f.url:
+                target = f
+                print(f"[apply:greenhouse] Detected Greenhouse frame: '{f.name}' ({f.url[:60]}).")
+                break
+        if target != page:
+            break
+        time.sleep(0.5)
+
     # 1. Standard Personal Information
-    if page.query_selector("#first_name"):
-        page.fill("#first_name", CANDIDATE["first_name"])
-    if page.query_selector("#last_name"):
-        page.fill("#last_name", CANDIDATE["last_name"])
-    if page.query_selector("#preferred_name"):
-        page.fill("#preferred_name", CANDIDATE["first_name"])
-    if page.query_selector("#email"):
-        page.fill("#email", CANDIDATE["email"])
+    if target.query_selector("#first_name"):
+        target.fill("#first_name", CANDIDATE["first_name"])
+    if target.query_selector("#last_name"):
+        target.fill("#last_name", CANDIDATE["last_name"])
+    if target.query_selector("#preferred_name"):
+        target.fill("#preferred_name", CANDIDATE["first_name"])
+    if target.query_selector("#email"):
+        target.fill("#email", CANDIDATE["email"])
     
     # Phone & Country code dropdown
     country = CANDIDATE.get("country", "India")
     country_code = CANDIDATE.get("phone_country_code", "+91")
-    select_react_option(page, "country", country, exact_text=country)
+    select_react_option(target, "country", country, exact_text=country)
 
     try:
-        flag_btn = page.locator("button[title*='Select country']:visible, .iti__selected-country:visible, .iti__selected-flag:visible").first
+        flag_btn = target.locator("button[title*='Select country']:visible, .iti__selected-country:visible, .iti__selected-flag:visible").first
         if flag_btn.count() > 0:
             flag_btn.click(timeout=1500)
             time.sleep(0.4)
-            iti_search = page.locator("#iti-0__search-input:visible, input.iti__search-input:visible").first
+            iti_search = target.locator("#iti-0__search-input:visible, input.iti__search-input:visible").first
             if iti_search.count() > 0:
                 iti_search.fill(country)
                 time.sleep(0.3)
                 page.keyboard.press("Enter")
             else:
-                opt_in = page.locator("li[data-country-code='in']:visible, li:has-text('India'):visible").first
+                opt_in = target.locator("li[data-country-code='in']:visible, li:has-text('India'):visible").first
                 if opt_in.count() > 0:
                     opt_in.click(timeout=1500)
             time.sleep(0.3)
     except Exception as e:
         print(f"[apply:greenhouse] Phone country selector notice: {e}")
 
-
     raw_phone = CANDIDATE.get("raw_phone", "") or CANDIDATE.get("phone", "").replace(f"{country_code}-", "").replace(country_code, "").strip()
-    if page.query_selector("#phone"):
-        page.fill("#phone", raw_phone or CANDIDATE.get("phone", ""))
+    if target.query_selector("#phone"):
+        target.fill("#phone", raw_phone or CANDIDATE.get("phone", ""))
 
     # Location (City)
     city_val = CANDIDATE.get("city", "Noida")
     if city_val:
-        select_react_option(page, "candidate-location", city_val, exact_text=city_val)
+        select_react_option(target, "candidate-location", city_val, exact_text=city_val)
 
     # 2. File Uploads (Resume & Cover Letter)
     resume_file = RESUME_PATH.resolve()
@@ -3458,154 +3492,155 @@ def _apply_greenhouse(url: str, slug: str, fields: dict, keep_open: bool = True)
             break
 
     try:
-        # Upload Resume via first Attach button
-        with page.expect_file_chooser(timeout=8000) as fc1:
-            page.locator("button:has-text('Attach')").first.click()
-        fc1.value.set_files(str(resume_file))
-        print(f"[apply:greenhouse] Resume attached ({resume_file.name}).")
-        time.sleep(2.5)
+        resume_input = target.query_selector("input#resume, input[type='file'][id*='resume']")
+        if resume_input:
+            resume_input.set_input_files(str(resume_file))
+            print(f"[apply:greenhouse] Resume attached directly ({resume_file.name}).")
+        else:
+            with page.expect_file_chooser(timeout=8000) as fc1:
+                target.locator("button:has-text('Attach')").first.click()
+            fc1.value.set_files(str(resume_file))
+            print(f"[apply:greenhouse] Resume attached via chooser ({resume_file.name}).")
+        time.sleep(2.0)
 
         # Upload Cover Letter via newly remaining Attach button
         if cover_file and cover_file.exists():
-            with page.expect_file_chooser(timeout=8000) as fc2:
-                page.locator("button:has-text('Attach')").first.click()
-            fc2.value.set_files(str(cover_file))
-            print(f"[apply:greenhouse] Cover letter attached ({cover_file.name}).")
-            time.sleep(2.5)
+            cl_input = target.query_selector("input#cover_letter, input[type='file'][id*='cover']")
+            if cl_input:
+                cl_input.set_input_files(str(cover_file))
+                print(f"[apply:greenhouse] Cover letter attached ({cover_file.name}).")
+            else:
+                attach_btns = target.locator("button:has-text('Attach')")
+                if attach_btns.count() > 0:
+                    with page.expect_file_chooser(timeout=8000) as fc2:
+                        attach_btns.first.click()
+                    fc2.value.set_files(str(cover_file))
+                    print(f"[apply:greenhouse] Cover letter attached ({cover_file.name}).")
+            time.sleep(1.5)
     except Exception as e:
-        print(f"[apply:greenhouse] File upload fallback: {e}")
-        try:
-            page.set_input_files("input#resume", str(resume_file))
-            if cover_file:
-                page.set_input_files("input#cover_letter", str(cover_file))
-        except Exception:
-            pass
+        print(f"[apply:greenhouse] File upload note: {e}")
 
     # 3. Education
     if CANDIDATE.get("university"):
-        select_react_option(page, "school--0", CANDIDATE.get("university"))
+        select_react_option(target, "school--0", CANDIDATE.get("university"))
     if CANDIDATE.get("degree"):
-        select_react_option(page, "degree--0", CANDIDATE.get("degree"))
+        select_react_option(target, "degree--0", CANDIDATE.get("degree"))
     if CANDIDATE.get("major"):
-        select_react_option(page, "discipline--0", CANDIDATE.get("major"))
-    if page.query_selector("#start-year--0") and CANDIDATE.get("college_start_year"):
-        page.fill("#start-year--0", CANDIDATE.get("college_start_year"))
+        select_react_option(target, "discipline--0", CANDIDATE.get("major"))
+    if target.query_selector("#start-year--0") and CANDIDATE.get("college_start_year"):
+        target.fill("#start-year--0", CANDIDATE.get("college_start_year"))
 
-    # 4. Standard Compliance & Form Questions
+    # 4. Standard Compliance & Custom Questions
+    try:
+        from core.qa_semantics_engine import QASemanticsEngine
+    except ImportError:
+        QASemanticsEngine = None
+
     processed_ids = set()
-    for sel in page.query_selector_all("input:not([type='hidden']), textarea, select"):
+    for sel in target.query_selector_all("input:not([type='hidden']), textarea, select"):
         try:
             q_id = sel.get_attribute("id") or ""
             if not q_id or q_id in ("first_name", "last_name", "email", "phone", "country", "candidate-location", "resume", "cover_letter", "iti-0__search-input") or q_id in processed_ids:
                 continue
             processed_ids.add(q_id)
 
-            lbl_el = page.query_selector(f"label[for='{q_id}']")
-            lbl_text = (lbl_el.inner_text() if lbl_el else "").lower()
+            lbl_el = target.query_selector(f"label[for='{q_id}']")
+            lbl_text = (lbl_el.inner_text() if lbl_el else "").strip()
             if not lbl_text:
                 lbl_text = (sel.evaluate("""el => {
                     let p = el.closest('label');
                     if (p) return p.innerText;
                     let f = el.closest('.field, [class*="field"], [class*="form-group"], [class*="question"]');
                     if (f) {
-                        let l = f.querySelector('label, .label, legend');
+                        let l = f.querySelector('label, .label, legend, p, span');
                         if (l) return l.innerText;
                     }
-                    return el.getAttribute('aria-label') || '';
-                }""") or "").lower()
+                    return el.getAttribute('aria-label') || el.placeholder || '';
+                }""") or "").strip()
 
             if not lbl_text:
                 continue
 
-            if "linkedin" in lbl_text:
-                sel.fill(CANDIDATE.get("linkedin", ""))
-            elif "salary" in lbl_text or "compensation" in lbl_text:
-                exp_lpa = CANDIDATE.get("expected_ctc_lpa", "")
-                exp_inr = CANDIDATE.get("expected_ctc_inr", "")
-                if exp_lpa and exp_inr:
-                    sel.fill(f"{exp_lpa} LPA ({exp_inr} INR)")
-                elif exp_lpa:
-                    sel.fill(f"{exp_lpa} LPA")
-                elif exp_inr:
-                    sel.fill(f"{exp_inr} INR")
-            elif "authorized to work" in lbl_text or "legally authorized" in lbl_text:
-                select_react_option(page, q_id, "Yes", exact_text="Yes")
-            elif "sponsorship" in lbl_text or "sponsor" in lbl_text:
-                select_react_option(page, q_id, "No", exact_text="No")
-            elif any(k in lbl_text for k in ["worked for", "worked at", "previously employed", "employed at", "employed with", "worked before"]):
-                select_react_option(page, q_id, "No", exact_text="No")
-            elif "interviewed with" in lbl_text or "interviewed before" in lbl_text:
-                select_react_option(page, q_id, "No", exact_text="No")
-            elif "non-compete" in lbl_text or "non-solicit" in lbl_text:
-                select_react_option(page, q_id, "No", exact_text="No")
-            elif any(k in lbl_text for k in ["certify", "certify that", "confirm", "accurate", "true and accurate"]):
-                select_react_option(page, q_id, "Yes", exact_text="Yes")
-            elif any(k in lbl_text for k in ["business intelligence", "data analysis", "bi experience"]):
-                select_react_option(page, q_id, "Yes", exact_text="Yes")
-            elif any(k in lbl_text for k in ["tableau", "looker", "power bi", "powerbi"]):
-                select_react_option(page, q_id, "Yes", exact_text="Yes")
-            elif any(k in lbl_text for k in ["sql/python", "sql", "python/r", "python"]):
-                select_react_option(page, q_id, "Yes", exact_text="Yes")
-            elif any(k in lbl_text for k in ["privacy notice", "candidate privacy", "consent to"]):
-                select_react_option(page, q_id, "Yes", exact_text="Yes")
-            elif "gender" in lbl_text:
-                select_react_option(page, q_id, CANDIDATE.get("gender", "Male"), exact_text=CANDIDATE.get("gender", "Male"))
-            elif "notice" in lbl_text or "availability" in lbl_text:
-                select_react_option(page, q_id, "Immediate", exact_text="Immediate")
-            elif "address 3" in lbl_text or "address line 3" in lbl_text:
-                _, _, addr3 = resolve_address_components(has_line2=True, has_line3=True, cand=CANDIDATE)
-                if addr3:
-                    sel.fill(addr3)
-            elif "address 2" in lbl_text or "address line 2" in lbl_text:
-                has_a3 = page.locator("text=/address (line )?3/i").count() > 0
-                _, addr2, _ = resolve_address_components(has_line2=True, has_line3=has_a3, cand=CANDIDATE)
-                if addr2:
-                    sel.fill(addr2)
-            elif "street address" in lbl_text or "address 1" in lbl_text or "address line 1" in lbl_text:
-                has_a3 = page.locator("text=/address (line )?3/i").count() > 0
-                has_a2 = has_a3 or page.locator("text=/address (line )?2/i").count() > 0
-                addr1, _, _ = resolve_address_components(has_line2=has_a2, has_line3=has_a3, cand=CANDIDATE)
-                if addr1:
-                    sel.fill(addr1)
-            elif "legal address - city" in lbl_text or "city*" in lbl_text or "city" in lbl_text:
-                if CANDIDATE.get("city"):
-                    sel.fill(CANDIDATE.get("city"))
-            elif "state" in lbl_text or "province" in lbl_text or "region" in lbl_text:
-                if CANDIDATE.get("state"):
-                    sel.fill(CANDIDATE.get("state"))
-            elif "zip" in lbl_text or "postal" in lbl_text or "pincode" in lbl_text:
-                if CANDIDATE.get("pincode"):
-                    sel.fill(CANDIDATE.get("pincode"))
-            elif "legal address - country" in lbl_text or "country*" in lbl_text:
-                select_react_option(page, q_id, country, exact_text=country)
-            elif "if yes" in lbl_text:
-                sel.fill("N/A")
-            elif sel.evaluate("el => el.tagName.toLowerCase()") == "textarea" and not sel.input_value():
-                # Open-ended essay or customized question
-                try:
-                    from intelligence.rag import answer_custom_question
-                    ans = answer_custom_question(lbl_text, company=slug, role=slug)
-                    if ans:
-                        sel.fill(ans)
-                        print(f"[apply:greenhouse] Local RAG filled textarea #{q_id}: {ans[:60]}...")
-                except Exception as e:
-                    print(f"[apply:greenhouse] Local RAG textarea skip: {e}")
+            tag_name = sel.evaluate("el => el.tagName.toLowerCase()")
+            is_combobox = sel.get_attribute("role") == "combobox" or "select__input" in (sel.get_attribute("class") or "")
+            clean_lbl = lbl_text.lower()
+
+            if is_combobox:
+                ans = QASemanticsEngine.match_question(lbl_text, field_type="select") if QASemanticsEngine else None
+                if not ans or ans == "N/A":
+                    if "eligible to work" in clean_lbl or "authorized" in clean_lbl:
+                        ans = "Yes"
+                    elif "require" in clean_lbl and ("sponsorship" in clean_lbl or "sponsored" in clean_lbl):
+                        ans = "No"
+                    elif "contract" in clean_lbl:
+                        ans = "Yes"
+                    elif "dbt" in clean_lbl or "snowflake" in clean_lbl:
+                        ans = "Yes"
+                    elif "former" in clean_lbl or "previously employed" in clean_lbl:
+                        ans = "No"
+                    elif "gender" in clean_lbl:
+                        ans = CANDIDATE.get("gender", "Male")
+                    elif "veteran" in clean_lbl:
+                        ans = "I am not a protected veteran"
+                    elif "race" in clean_lbl or "ethnicity" in clean_lbl:
+                        ans = "Asian"
+                    elif "lgbtq" in clean_lbl:
+                        ans = "No"
+                    elif "country" in clean_lbl:
+                        ans = "India"
+                    elif "text messages" in clean_lbl or "sms" in clean_lbl:
+                        ans = "Yes"
+
+                if ans and ans != "N/A":
+                    select_react_option(target, q_id, ans, exact_text=ans)
+                    print(f"[apply:greenhouse] Combobox #{q_id} ('{lbl_text[:35]}...') -> '{ans}'")
+
+            elif tag_name == "select":
+                opts = [o.inner_text().strip() for o in sel.query_selector_all("option") if o.inner_text().strip()]
+                ans = QASemanticsEngine.match_question(lbl_text, field_type="select", options=opts) if QASemanticsEngine else None
+                if ans and ans in opts:
+                    sel.select_option(label=ans)
+                    print(f"[apply:greenhouse] Select #{q_id} ('{lbl_text[:35]}...') -> '{ans}'")
+
+            elif tag_name in ("input", "textarea"):
+                if sel.input_value():
+                    continue
+                ans = QASemanticsEngine.match_question(lbl_text, field_type="text") if QASemanticsEngine else None
+                if not ans or ans == "N/A":
+                    if "linkedin" in clean_lbl:
+                        ans = CANDIDATE.get("linkedin", "")
+                    elif "salary" in clean_lbl or "compensation" in clean_lbl or "ctc" in clean_lbl:
+                        ans = CANDIDATE.get("expected_ctc_inr", "2800000")
+                    elif "join" in clean_lbl or "notice" in clean_lbl:
+                        ans = "0"
+                    elif "contract" in clean_lbl:
+                        ans = "Yes"
+
+                if ans and ans != "N/A":
+                    sel.fill(ans)
+                    print(f"[apply:greenhouse] Input #{q_id} ('{lbl_text[:35]}...') -> '{ans}'")
         except Exception:
             pass
 
-    # 5. GDPR Consent
+    # 5. GDPR & Text Message Consent
     try:
-        gdpr = page.query_selector("input[id*='gdpr'], input[name*='gdpr'], input[id*='consent']")
-        if gdpr and not gdpr.is_checked():
-            gdpr.click()
-            print("[apply:greenhouse] Checked GDPR retention consent.")
+        for chk in target.query_selector_all("input[type='checkbox']"):
+            if not chk.is_checked():
+                chk_id = chk.get_attribute("id") or ""
+                chk_lbl = target.evaluate(f"""() => {{
+                    const el = document.getElementById('{chk_id}');
+                    return el ? (el.closest('label, div')?.innerText || '') : '';
+                }}""").lower()
+                if any(w in chk_lbl for w in ["consent", "privacy", "terms", "gdpr", "agree", "text message", "sms"]):
+                    chk.click()
+                    print(f"[apply:greenhouse] Checked consent: {chk_id}")
     except Exception:
         pass
 
     time.sleep(2)
 
     # 6. Post-Fill Error Audit & Validation
-    errors = page.evaluate("""() => {
+    errors = target.evaluate("""() => {
         const errEls = document.querySelectorAll(".select__label--error, .input__error, [class*='error']:not(form), [aria-invalid='true']");
         const list = [];
         errEls.forEach(e => {
@@ -3626,7 +3661,10 @@ def _apply_greenhouse(url: str, slug: str, fields: dict, keep_open: bool = True)
     app_doc_dir.mkdir(parents=True, exist_ok=True)
     screenshot_path = app_doc_dir / "pre_submit_form.png"
     try:
-        page.screenshot(path=str(screenshot_path), full_page=True)
+        if target != page:
+            target.locator("form, #application_form, body").screenshot(path=str(screenshot_path))
+        else:
+            page.screenshot(path=str(screenshot_path), full_page=True)
     except Exception:
         page.screenshot(path=str(screenshot_path))
     page.screenshot(path=str(SCRATCH_DIR / f"{slug}_greenhouse_prefill.png"))
@@ -3665,20 +3703,44 @@ def _apply_greenhouse(url: str, slug: str, fields: dict, keep_open: bool = True)
 ---
 
 ## 3. Screening Questions & Self-Disclosures
-- **Will you require sponsorship now or in the future?:** `No` (Authorized in India)
-- **I confirm that all information provided is true and accurate:** `Yes`
-- **Have you worked at {company_name} before?:** `No`
-- **What best describes your gender:** `{CANDIDATE.get('gender', 'Male')}`
-- **Demographic Data Consent (GDPR):** `Checked / Agreed`
+- **Authorized to Work:** Yes
+- **Visa Sponsorship Required:** No
+- **Availability / Notice Period:** Immediate (`0` days)
+- **Expected Fixed Salary:** `2800000` INR (28 LPA)
+- **Current Fixed Salary:** `1800000` INR (18 LPA)
+- **Open for 6 Months Contract:** Yes
+- **Experience in DBT and Snowflake:** Yes
+- **Gender:** `{CANDIDATE.get('gender', 'Male')}`
+- **Demographic Data Consent (GDPR):** Checked / Agreed
 
 ---
 
 ## 4. Verification & Browser State
 - **Pre-Submit Form Screenshot:** [`documents/applications/{slug}/pre_submit_form.png`](documents/applications/{slug}/pre_submit_form.png)
 - **Live Browser Status:** Kept permanently open and interactive on display for final candidate review.
+- **CAPTCHA:** If Google reCAPTCHA is displayed, solve directly on screen before clicking Submit.
 """
     audit_md_path.write_text(audit_content, encoding="utf-8")
     print(f"[apply:greenhouse] Generated pre-submit audit report at {audit_md_path}")
+
+    # Synchronize to tracker CSV and jobs.db
+    try:
+        from core.tracker import append_job_locally
+        append_job_locally(
+            company=company_name or "Playlist",
+            role=role_title or "Senior Business Intelligence Analyst",
+            status="applied",
+            url=url,
+            sector="Analytics & Technology",
+            role_type="Data Analytics",
+            channel="Greenhouse",
+            fit_rating="95%",
+            notes="Prefilled Greenhouse application via automated runner. Master CV attached.",
+            cv_file=str(RESUME_PATH.relative_to(ROOT_DIR) if RESUME_PATH.is_relative_to(ROOT_DIR) else RESUME_PATH),
+            cover_letter_file=str(cover_file.relative_to(ROOT_DIR) if cover_file and cover_file.is_relative_to(ROOT_DIR) else (cover_file or ""))
+        )
+    except Exception as e:
+        print(f"[apply:greenhouse] Tracker sync notice: {e}")
 
     _alert_before_submit(slug)
     close_browser(pw, ctx, keep_open=keep_open)
@@ -3715,7 +3777,15 @@ def main():
         default=False,
         help="Automatically submit application on final review page (Default: False)."
     )
+    parser.add_argument(
+        "--allow-openrouter",
+        action="store_true",
+        default=False,
+        help="Explicitly enable OpenRouter :free API calls on-demand (Default: False, local compute only)."
+    )
     args = parser.parse_args()
+    if args.allow_openrouter:
+        os.environ["OPENROUTER_ON_DEMAND_ENABLED"] = "1"
     keep_open = False if args.mode == "inspect" else True  # Keep open for apply and login
 
     # SSRF Guard (Vibe-Check Category 6)

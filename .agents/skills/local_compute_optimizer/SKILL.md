@@ -12,12 +12,12 @@ This skill maximizes the use of local CPU, Python 3.15 native lazy imports (`PYT
 | Workflow Step | Local Machine Tool / Script | Token Impact |
 | :--- | :--- | :--- |
 | **Job Discovery** | `.agents/skills/*` CLIs & `tools/poll_boards.py` | 100% Zero-Token (Local HTTP/API & JSON parsing) |
-| **Job Pre-Filtering** | `tools/local_prefilter.py` | 100% Zero-Token (Local TF-IDF & Regex filtering) |
+| **Job Pre-Filtering & Research** | `tools/local_prefilter.py` & `tools/research_jobs.py` | 100% Zero-Token (Local TF-IDF, `OnDeviceParser`, & Regex filtering) |
 | **Fit Pre-Scoring** | `tools/local_prefilter.py` | Hybrid (Filters <65% fit locally; LLM scores remaining) |
 | **PDF & Layout Validation** | `tools/verify_pdf.py` & `tools/verify_layout.py` | 100% Zero-Token (Poppler CLI & pdfinfo parsing) |
-| **ATS Form Autofill** | `tools/ats_runner.py` (Playwright) | 90% Zero-Token (Fills common fields from `.env` and local secrets) |
+| **ATS Form Autofill** | `tools/ats_runner.py` & `tools/linkedin_easy_apply_runner.py` | 90-100% Zero-Token (`QASemanticsEngine` + KB -> local Ollama -> `--allow-openrouter`) |
 | **Tracker & DB Management** | `tools/db_state.py` & `tools/audit_record.py` | 100% Zero-Token (Local SQLite & CSV mutations) |
-| **OpenRouter LLM Requests** | `tools/openrouter.py` | 80-90% Token Reduction (Input trimming, prompt caching layout, max output caps, zero-cost :free models) |
+| **OpenRouter LLM Requests** | `tools/openrouter.py` (`--tier chore\|heavy`, `openrouter/free`) | 80-90% Token Reduction (Input trimming, SQLite cache, task-tier caps, `:free` only, opt-in via `--allow-openrouter`) |
 | **Lazy Imports Execution** | `utils/lazy_bootstrap.py` | Sub-millisecond CLI startup & 60% memory savings |
 
 ## Quickstart Commands
@@ -32,6 +32,6 @@ python tools/verify_pdf.py cv/resume.pdf --min-chars 100 --pages 2
 # 3. Auto-fill ATS application form using Playwright locally (90% Token Reduction)
 python tools/ats_runner.py --url "<JOB_URL>" --role-name "<ROLE>" --mode apply
 
-# 4. Run token-optimized OpenRouter request with input trimming & max_tokens cap
-python tools/openrouter.py "Summarize requirements" --max-tokens 300 --json
+# 4. Run token-optimized OpenRouter request (explicit on-demand or via --allow-openrouter)
+python tools/openrouter.py "Classify domain" --model openrouter/free --tier chore --max-tokens 150 --json
 ```
