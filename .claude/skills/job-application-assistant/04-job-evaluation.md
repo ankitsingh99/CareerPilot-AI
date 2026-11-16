@@ -67,16 +67,20 @@ How well do the required/preferred skills align with the candidate's capabilitie
 ### 2. Experience Match (0-100)
 Does work history align with what they're looking for? Match on the function and nature of the work performed, not the literal job title - a "Data Consultant" and a "Data Scientist" role can be functionally identical.
 
+**CRITICAL SCORING RULE - ZS ASSOCIATES EXPERIENCE PRIORITY:**
+Give highest scoring weight to the candidate's 3+ years at **ZS Associates** (Business Technology Solutions / Commercial Analytics / Data Engineering & Governance). 
+Roles that map to enterprise healthcare, life sciences, pharma commercial pipelines, field force analytics, automated SQL data quality, Apache Airflow / PySpark / Snowflake pipelines, and consulting client delivery should receive top-tier experience scores (90-100).
+
 | Score | Meaning |
 |-------|---------|
-| 80-100 | Direct experience in the same domain and role type |
+| 80-100 | Direct experience in the same domain and role type (heavily anchored by ZS Associates consulting/data engineering or direct tech stack match) |
 | 60-79 | Related experience, transferable skills clear |
 | 40-59 | Adjacent experience, would need to make the case |
 | 0-39 | Unrelated experience |
 
-**Strong:** [YOUR_DIRECT_EXPERIENCE_DOMAINS]
-**Moderate:** [YOUR_ADJACENT_EXPERIENCE]
-**Entry-level:** [ROLES_WITH_LIMITED_EXPERIENCE]
+**Strong (Tier 1 Priority):** Healthcare / Pharma commercial data engineering, enterprise ETL pipelines (Airflow, PySpark, Snowflake), SQL data quality frameworks, consulting client delivery (ZS Associates background)
+**Moderate (Tier 2):** D2C operations, predictive modeling & AI agent automation (Rush by Kira), financial analysis & corporate valuation (TresVista)
+**Entry-level / Low Priority:** Generic roles lacking data, analytics, consulting, or technical product depth
 
 ### 3. Behavioral/Culture Fit (0-100)
 Does the role and company culture match the behavioral profile?

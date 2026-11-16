@@ -261,7 +261,7 @@ _QA_CACHE: Dict[str, str] = {}
 def get_candidate_context_summary() -> str:
     """Return compact candidate context for OpenRouter free prompt caching."""
     name = os.getenv("CANDIDATE_NAME", "Candidate")
-    yoe = os.getenv("CANDIDATE_TOTAL_YOE", "4.8")
+    yoe = os.getenv("CANDIDATE_TOTAL_YOE", "5")
     skills = os.getenv("CANDIDATE_PRIMARY_SKILLS", "Python, PySpark, SQL, Airflow, ETL")
     excluded = os.getenv("CANDIDATE_EXCLUDED_TECHS", "Java, Spring Boot, Kubernetes, Docker")
     ctc_lpa = os.getenv("CANDIDATE_CURRENT_CTC_LPA", "18.0")
@@ -489,7 +489,7 @@ def answer_modal_questions(page: Page):
                 if is_req:
                     ans = ask_user_for_answer(lbl or "Candidate Qualifications", field_type="textarea")
 
-            ta.fill(ans if ans and ans != "N/A" else "4.8 years of experience in Data Engineering, Analytics & AI Agent Development.")
+            ta.fill(ans if ans and ans != "N/A" else "5 years of experience in Data Engineering, Analytics & AI Agent Development.")
         except Exception:
             pass
 
@@ -758,17 +758,42 @@ def answer_modal_questions(page: Page):
             lbl_el = page.query_selector(f"label[for='{cb_id}']") if cb_id else None
             lbl_txt = (lbl_el.inner_text() if lbl_el else "").strip().lower()
             if not lbl_txt:
-                lbl_txt = cb.evaluate("el => (el.closest('label, li, div')?.innerText || el.getAttribute('aria-label') || '')").strip().lower()
+                lbl_txt = cb.evaluate("""el => {
+                    const parentBlock = el.closest('fieldset, [data-sdui-screen], [componentkey], .fb-dash-form-element, li') || el.parentElement?.parentElement;
+                    return (parentBlock ? parentBlock.innerText : '') || el.getAttribute('aria-label') || '';
+                }""").strip().lower()
 
             # 1. Terms & consent
-            if any(k in lbl_txt for k in ["agree", "consent", "accept", "terms", "privacy", "policy", "acknowledge"]):
-                cb.check()
+            if any(k in lbl_txt for k in ["agree", "consent", "accept", "terms", "privacy", "policy", "acknowledge", "declaration"]):
+                try:
+                    cb.check()
+                except Exception:
+                    pass
+                if not cb.is_checked():
+                    try:
+                        if lbl_el:
+                            lbl_el.click()
+                        else:
+                            cb.click()
+                    except Exception:
+                        pass
                 print(f"  [Checkbox] Checked terms/consent: '{lbl_txt[:30]}'")
                 continue
 
             # 2. Candidate core technical skills
             if any(skill in lbl_txt for skill in CORE_SKILLS) and "none" not in lbl_txt:
-                cb.check()
+                try:
+                    cb.check()
+                except Exception:
+                    pass
+                if not cb.is_checked():
+                    try:
+                        if lbl_el:
+                            lbl_el.click()
+                        else:
+                            cb.click()
+                    except Exception:
+                        pass
                 print(f"  [Checkbox] Checked skill: '{lbl_txt[:30]}'")
                 continue
         except Exception:
@@ -1351,7 +1376,32 @@ def apply_to_current_job(page: Page, review_only: bool = False) -> bool:
                 print("  [Review Mode] Submit button NOT clicked per --review-only instruction.")
                 alert("Review Ready", "Application populated and paused at review screen.")
                 return True
-            print("  [✓] Submitting application…")
+
+            # Pre-Submit Sanity & Review Audit
+            try:
+                review_audit = page.evaluate("""() => {
+                    const modal = document.querySelector("dialog[data-testid='dialog'], [data-sdui-screen*='EasyApply'], [role='dialog'], .jobs-easy-apply-modal, .artdeco-modal");
+                    if (!modal) return [];
+                    const sections = [];
+                    modal.querySelectorAll('.jobs-easy-apply-review__section, [data-test-easy-apply-scrollable] > div, fieldset').forEach(sec => {
+                        const h = sec.querySelector('h3, h4, legend, .jobs-easy-apply-review__section-title');
+                        const title = h ? h.innerText.trim() : '';
+                        const lines = Array.from(sec.querySelectorAll('p, span, dd, dt, li')).map(el => el.innerText.trim()).filter(Boolean);
+                        if (title || lines.length) {
+                            sections.push({ title: title || 'Field', lines: lines.slice(0, 5) });
+                        }
+                    });
+                    return sections;
+                }""")
+                if review_audit:
+                    print("  [Pre-Submit Review Audit]")
+                    for item in review_audit[:6]:
+                        lines_preview = ' | '.join(item.get('lines', [])[:3])
+                        print(f"    • {item.get('title')}: {lines_preview}")
+            except Exception as ae:
+                print(f"  [Review Audit Note] {ae}")
+
+            print("  [✓] Verified review answers. Submitting application…")
             page.evaluate("""() => {
                 const modal = document.querySelector("dialog[data-testid='dialog'], [data-sdui-screen*='EasyApply'], [role='dialog'], .jobs-easy-apply-modal, .artdeco-modal");
                 // Uncheck 'Follow company' if present to keep candidate feed clean
@@ -1650,7 +1700,9 @@ def run(
     keep_open: bool = True,
     override_daily_limit: bool = False,
     review_only: bool = False,
-    no_remote: bool = False
+    no_remote: bool = False,
+    urls: Optional[List[str]] = None,
+    company_id: Optional[str] = None
 ):
     global RESUME_PATH
     load_env()
@@ -1711,6 +1763,8 @@ def run(
         queries_to_scan = [k.strip() for k in keywords.split(";") if k.strip()]
     elif keywords and keywords.strip().lower() not in ("auto", "none", ""):
         queries_to_scan = [keywords.strip()]
+    elif company_id and (keywords is None or keywords == "auto" or keywords == ""):
+        queries_to_scan = [""]
     else:
         # Default clusters covering candidate's target roles from profile / .env
         queries_to_scan = [
@@ -1733,7 +1787,7 @@ def run(
     print(f"  • Experience Level Filter: {exp_display}")
     print(f"  • Company Blacklist: {len(active_company_blacklist)} rules active")
     print(f"  • Title Blacklist: {len(active_title_blacklist)} rules active")
-    print(f"  • Max YOE Ceiling: {max_yoe_ceiling} years (Candidate: 4.8 YOE)")
+    print(f"  • Max YOE Ceiling: {max_yoe_ceiling} years (Candidate: 5 YOE)")
     print(f"  • Sorting: Date Descending / Newest to Oldest (sortBy={sort})")
     print(f"  • Recency Filter: {tpr_param or 'None (All time)'}")
     print(f"  • Target Applications: {target}")
@@ -1766,12 +1820,29 @@ def run(
         print("[LinkedIn Setup] Attached to existing browser session on CDP port 9222.")
     except Exception as cdp_err:
         print(f"[LinkedIn Setup] CDP connect note: {cdp_err}. Launching persistent context...")
-        browser = pw.chromium.launch_persistent_context(
-            user_data_dir=str(session_dir),
-            headless=False,
-            no_viewport=True,
-            args=["--start-maximized", "--no-default-browser-check", "--disable-gpu", "--disable-extensions", "--remote-debugging-port=9222"]
-        )
+        for lock_name in ["SingletonLock", "SingletonSocket", "SingletonCookie"]:
+            lock_path = session_dir / lock_name
+            if lock_path.exists() or lock_path.is_symlink():
+                try:
+                    lock_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+        try:
+            browser = pw.chromium.launch_persistent_context(
+                user_data_dir=str(session_dir),
+                channel="chrome",
+                headless=False,
+                no_viewport=True,
+                args=["--start-maximized", "--no-default-browser-check", "--disable-gpu", "--disable-extensions", "--remote-debugging-port=9222"]
+            )
+        except Exception as e_chrome:
+            print(f"[LinkedIn Setup] Channel chrome note ({e_chrome}). Falling back to default chromium...")
+            browser = pw.chromium.launch_persistent_context(
+                user_data_dir=str(session_dir),
+                headless=False,
+                no_viewport=True,
+                args=["--start-maximized", "--no-default-browser-check", "--disable-gpu", "--disable-extensions", "--remote-debugging-port=9222"]
+            )
         ctx = browser
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
 
@@ -1798,9 +1869,101 @@ def run(
     applied = 0
     limit_reached = False
 
+    # Step 2.5: Direct URL Mode (if explicit URLs/job IDs provided)
+    if urls:
+        print(f"\n[Direct URL Mode] Processing {len(urls)} specific job URL(s)...")
+        for u_item in urls:
+            if (ROOT_DIR / ".stop_easy_apply").exists() or limit_reached or (review_only and applied > 0) or applied >= target or (not override_daily_limit and (today_applied + applied) >= DAILY_EASY_APPLY_LIMIT):
+                break
+
+            clean_item = u_item.strip()
+            if not clean_item:
+                continue
+            if clean_item.isdigit():
+                target_url = f"https://www.linkedin.com/jobs/view/{clean_item}/"
+                card_jid = clean_item
+            else:
+                target_url = clean_item
+                m_jid = re.search(r"view/(\d+)", clean_item)
+                card_jid = m_jid.group(1) if m_jid else clean_item
+
+            if card_jid in applied_urls or target_url in applied_urls:
+                print(f"  [-] Already applied per tracker: {target_url} [ID: {card_jid}]")
+                continue
+
+            print(f"\n→ Navigating directly to target job: {target_url}")
+            try:
+                page.goto(target_url, wait_until="domcontentloaded")
+                time.sleep(2.5)
+            except Exception as ge:
+                print(f"  [!] Navigation error ({ge})")
+                continue
+
+            try:
+                t_el = page.query_selector("a[href*='/jobs/view/'], .job-details-jobs-unified-top-card__job-title, .jobs-unified-top-card__job-title, h1, h2")
+                c_el = page.query_selector("a[href*='/company/'], .job-details-jobs-unified-top-card__company-name, .jobs-unified-top-card__company-name")
+                det_title = t_el.inner_text().strip() if t_el else "Unknown Role"
+                det_company = c_el.inner_text().strip() if c_el else "Unknown Company"
+            except Exception:
+                det_title = "Unknown Role"
+                det_company = "Unknown Company"
+
+            # Seniority YOE ceiling check
+            jd_el = page.query_selector(".jobs-description__content, .jobs-box__html-content, #job-details, .jobs-description")
+            if jd_el:
+                jd_text = (jd_el.inner_text() or "").strip()
+                min_yoe = extract_min_yoe_requirement(jd_text)
+                if min_yoe and min_yoe > max_yoe_ceiling:
+                    print(f"  [-] Skipped senior role: requires {min_yoe}+ YOE > ceiling of {max_yoe_ceiling} YOE. (Role: {det_title})")
+                    record_failed_application(det_company, det_title, target_url, "Seniority Ceiling Exceeded", f"Requires {min_yoe}+ YOE")
+                    continue
+
+            print(f"\n→ Applying to: {det_title} @ {det_company} [ID: {card_jid}]")
+            try:
+                ok = apply_to_current_job(page, review_only=review_only)
+            except RuntimeError as re_err:
+                if "LINKEDIN_DAILY_LIMIT_REACHED" in str(re_err):
+                    print("\n[!] LinkedIn account daily Easy Apply quota reached for today.")
+                    limit_reached = True
+                    break
+                raise
+
+            if ok:
+                if review_only:
+                    applied += 1
+                    print(f"  [Review Mode] Application populated for review: {det_title} @ {det_company}")
+                    alert("Application Ready for Review", f"Review ready for {det_title} @ {det_company}")
+                    break
+                applied += 1
+                applied_urls.add(card_jid)
+                applied_urls.add(target_url)
+                print(f"  [✓] Successfully Applied! Progress: {applied}/{target}")
+                try:
+                    record_application(
+                        company=det_company,
+                        role=det_title,
+                        job_url=f"https://www.linkedin.com/jobs/view/{card_jid}/",
+                        cv_path=str(RESUME_PATH.relative_to(ROOT_DIR)) if RESUME_PATH else "cv/Ankit_Resume_v4.pdf"
+                    )
+                except Exception as le:
+                    print(f"  [Tracker Note] {le}")
+            else:
+                modal_open = page.query_selector("dialog[data-testid='dialog'], [data-sdui-screen*='EasyApply'], [role='dialog'], .jobs-easy-apply-modal, .artdeco-modal")
+                if modal_open and modal_open.is_visible():
+                    print("  [!] Form modal remains open on display for candidate inspection.")
+                    alert("Form Paused on Screen", f"Modal open for {det_title} @ {det_company}. Please inspect.")
+                    for _ in range(150):
+                        time.sleep(2)
+                        m_check = page.query_selector("dialog[data-testid='dialog'], [data-sdui-screen*='EasyApply'], [role='dialog'], .jobs-easy-apply-modal, .artdeco-modal")
+                        if not m_check or not m_check.is_visible():
+                            break
+
+        if urls and not keywords and not company_id:
+            locations_to_scan = []
+
     # Step 3: Iterate through locations and designation clusters
     for loc in locations_to_scan:
-        if limit_reached or (review_only and applied > 0) or applied >= target or (not override_daily_limit and (today_applied + applied) >= DAILY_EASY_APPLY_LIMIT):
+        if (ROOT_DIR / ".stop_easy_apply").exists() or limit_reached or (review_only and applied > 0) or applied >= target or (not override_daily_limit and (today_applied + applied) >= DAILY_EASY_APPLY_LIMIT):
             break
 
         print(f"\n{'#'*65}")
@@ -1808,7 +1971,7 @@ def run(
         print(f"{'#'*65}")
 
         for kw in queries_to_scan:
-            if limit_reached or (review_only and applied > 0) or applied >= target or (not override_daily_limit and (today_applied + applied) >= DAILY_EASY_APPLY_LIMIT):
+            if (ROOT_DIR / ".stop_easy_apply").exists() or limit_reached or (review_only and applied > 0) or applied >= target or (not override_daily_limit and (today_applied + applied) >= DAILY_EASY_APPLY_LIMIT):
                 break
 
             canonical_loc, geo_id = resolve_linkedin_geo(loc)
@@ -1817,6 +1980,7 @@ def run(
             geo_param = f"&geoId={geo_id}" if geo_id else ""
             wt_param = "&f_WT=1%2C3" if no_remote else ""
             f_e_param = f"&f_E={urllib.parse.quote(experience_level)}" if (experience_level and experience_level.lower() not in ("all", "none", "")) else ""
+            company_param = f"&f_C={urllib.parse.quote(str(company_id))}" if company_id else ""
             search_url = (
                 f"https://www.linkedin.com/jobs/search/?"
                 f"keywords={encoded_kw}"
@@ -1825,6 +1989,7 @@ def run(
                 f"&f_AL=true"
                 f"{wt_param}"
                 f"{f_e_param}"
+                f"{company_param}"
                 f"&sortBy={sort}"
                 f"{tpr_param}"
             )
@@ -1959,10 +2124,12 @@ def run(
                                 continue
 
                             # Title filter: ensure role matches keywords if explicit query provided
-                            if kw != "auto" and not any(term in c_title.lower() for term in [
-                                "analyst", "analytics", "data", "business", "consultant", "scientist",
-                                "engineer", "governance", "bi", "reporting", "etl", "sql", "ai", "llm"
-                            ]):
+                            if kw != "auto" and not (
+                                any(term in c_title.lower() for term in [
+                                    "analyst", "analytics", "data", "business", "consultant", "scientist",
+                                    "engineer", "governance", "reporting", "etl", "sql", "llm"
+                                ]) or re.search(r"\b(ai|bi)\b", c_title, re.IGNORECASE)
+                            ):
                                 print(f"  [-] Skipped non-matching title: '{c_title}'")
                                 continue
 
@@ -1990,12 +2157,12 @@ def run(
 
                             # Ensure active page is valid and open
                             if page.is_closed():
-                                active_pages = [p for p in context.pages if not p.is_closed()]
+                                active_pages = [p for p in ctx.pages if not p.is_closed()]
                                 if active_pages:
                                     page = active_pages[-1]
                                 else:
                                     print("  [!] Browser page was closed. Reopening jobs page...")
-                                    page = context.new_page()
+                                    page = ctx.new_page()
                                     page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
                                     time.sleep(2.0)
                                     break
@@ -2008,7 +2175,7 @@ def run(
                                 det_company = c_el.inner_text().strip() if c_el else c_company
                             except Exception as pe:
                                 print(f"  [!] Card detail inspection note ({pe}). Recovering...")
-                                active_pages = [p for p in context.pages if not p.is_closed()]
+                                active_pages = [p for p in ctx.pages if not p.is_closed()]
                                 if active_pages:
                                     page = active_pages[-1]
                                 continue
@@ -2021,7 +2188,7 @@ def run(
                                 print(f"  [-] Skipped blacklisted title (detail): '{det_title}'")
                                 continue
 
-                            # Seniority YOE ceiling check (Candidate has 4.8 YOE; default ceiling 8 YOE)
+                            # Seniority YOE ceiling check (Candidate has 5 YOE; default ceiling 8 YOE)
                             jd_el = page.query_selector(".jobs-description__content, .jobs-box__html-content, #job-details, .jobs-description")
                             if jd_el:
                                 jd_text = (jd_el.inner_text() or "").strip()
@@ -2083,6 +2250,16 @@ def run(
                     break
 
                 for jid in job_ids:
+                    stop_flag = ROOT_DIR / ".stop_easy_apply"
+                    if stop_flag.exists():
+                        print(f"\n[Stop Flag] Found {stop_flag.name}. Halting Easy Apply runner per user instruction.")
+                        try:
+                            stop_flag.unlink()
+                        except Exception:
+                            pass
+                        applied = target
+                        break
+
                     if applied >= target:
                         break
                     if not override_daily_limit and (today_applied + applied) >= DAILY_EASY_APPLY_LIMIT:
@@ -2295,6 +2472,8 @@ if __name__ == "__main__":
     parser.add_argument("--locations", type=str, default=None, help="Alias for comma-separated locations queue")
     parser.add_argument("--time-filter", "-t", type=str, default="r86400", help="Recency filter: r86400 / 24h (default: r86400)")
     parser.add_argument("--sort", "-s", type=str, default="DD", choices=["DD", "R"], help="DD = Date Descending (newest to old), R = Relevant")
+    parser.add_argument("--url", "--urls", dest="urls", nargs="*", default=None, help="Direct job URL(s) or Job ID(s) to apply directly")
+    parser.add_argument("--company-id", type=str, default=None, help="LinkedIn company ID filter (e.g. 3545422 for Nykaa)")
     parser.add_argument("--experience-level", "-e", type=str, default="3,4", help="LinkedIn experience levels: 1=Intern, 2=Entry, 3=Associate, 4=Mid-Senior, 5=Director, 6=Exec (default: 3,4)")
     parser.add_argument("--max-yoe-ceiling", "--max-yoe", type=int, default=8, help="Maximum years of experience ceiling to apply (default: 8 YOE)")
     parser.add_argument("--company-blacklist", type=str, default="", help="Comma-separated additional company names to skip")
@@ -2337,6 +2516,8 @@ if __name__ == "__main__":
         keep_open=not args.no_keep_open,
         override_daily_limit=args.override_daily_limit,
         review_only=args.review_only,
-        no_remote=args.no_remote
+        no_remote=args.no_remote,
+        urls=args.urls,
+        company_id=args.company_id
     )
 

@@ -6,9 +6,12 @@ description: THE MOST FUNDAMENTAL DIRECTIVE - ALWAYS CHECK CAPABILITIES
 # URGENT AND FUNDAMENTAL DIRECTIVE
 
 **CRITICAL INSTRUCTION FOR ALL MODELS:**
-Before you do *anything* else, you MUST ALWAYS initiate your thought process and execution by explicitly checking all available **SKILLS, TOOLS, and PLUGINS** in your context. 
+Before you do *anything* else on any task in this tool, you MUST ALWAYS initiate your thought process and execution by explicitly going through:
+1. **All Available Skills** (`.agents/skills/*/SKILL.md`, `.agents/plugins/*/skills/*/SKILL.md`, and system-listed skills relevant to the task).
+2. **All Active Rules** (`AGENTS.md`, `.agents/rules/*.md`, and `user_inputs/candidate_preferences_and_rules.md`).
+3. **All Available Tools & Plugins** (repository CLI modules in `tools/`, `parsers/`, `core/`, `automation/`, MCP servers, and installed plugins) before creating or modifying anything.
 
-This is the MOST FUNDAMENTAL thing you are supposed to do. **NEVER FORGET THIS.** Always see what capabilities are at your disposal before proceeding with any user request.
+This is the MOST FUNDAMENTAL thing you are supposed to do. **NEVER FORGET THIS.** Always verify what rules govern the task and what existing skills/tools are at your disposal before proceeding with any user request.
 
 Always use openrouter free models only.
 
@@ -18,6 +21,10 @@ Use OpenRouter ONLY if:
 1. The user explicitly requests to use OpenRouter (e.g. "use openrouter").
 2. The user previously asked to perform a task using OpenRouter and then answers a follow-up question or provides input for that task without explicitly repeating "use openrouter".
 In all other scenarios, rely on local deterministic compute and offline parsers.
+
+## GEMINI-EXCLUSIVE COVER LETTER WRITING & HUMANIZING DIRECTIVE
+**Exclusively use the active Gemini model (Antigravity Gemini) for writing, rewriting, proofreading, and humanizing cover letters.**
+NEVER delegate cover letter drafting, proofreading, or humanizing to non-Gemini models (`cohere/north-mini-code:free`, `qwen2.5:7b` Ollama, `nvidia/*`, `minimax/*`, `deepseek/*`, `flint`, etc.). Run local deterministic tools (`tools/dl_humanizer_prefilter.py`, `parsers/turnitout_engine.py`, `parsers/linter.py`, `tools/validate_cover_letter.py`, `tools/verify_cv_facts.py`) strictly for pre-filtering, watermark/5-gram/ZipPy audits, structural/cliche linting, and factual grounding.
 
 ## TOKEN-LEAN ARCHITECTURE & STRICT REUSABILITY MANDATE (ZERO-TOLERANCE)
 **You must not create py or any kind of script for one single application, only reusable codes are allowed.**

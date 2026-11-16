@@ -77,13 +77,38 @@ class TestOutreachEngine(unittest.TestCase):
             include_hr_fields=True,
         )
         self.assertIn("Hope you are having a good week.", email)
-        self.assertIn("Total exp:", email)
-        self.assertIn("Current ctc:", email)
-        self.assertIn("Expected ctc:", email)
-        self.assertIn("Notice period:", email)
+        self.assertIn("years of experience", email)
+        self.assertIn("current CTC", email)
+        self.assertIn("expected CTC", email)
+        self.assertIn("available to join immediately", email)
+        self.assertNotIn("Total exp:", email)
+        self.assertNotIn("Current ctc:", email)
+        self.assertNotIn("(0 days notice)", email)
+        self.assertNotIn("REST/Webhook", email)
+        self.assertIn("AI Agents", email)
         self.assertNotIn("—", email)
         self.assertNotIn("Java", email)
         self.assertTrue(audit_and_finalize_outreach(email)["passed"])
+
+    def test_analyze_jd_fit_risk_fraud(self):
+        jd = (
+            "Hiring Fraud Risk Consultant passionate about risk analytics, fraud strategy, "
+            "and data-driven decision-making. Strong hands-on SQL and Python required."
+        )
+        fit = analyze_jd_fit(jd, role="Fraud Risk Consultant")
+        self.assertEqual(fit["primary_domain"], "risk_fraud")
+        self.assertIn("SQL", fit["matched_skills"])
+        self.assertIn("Python", fit["matched_skills"])
+
+    def test_analyze_jd_fit_logistics_supply_chain(self):
+        jd = (
+            "Delhivery TransportOne logistics freight parcel AWB shipment auditing and Spark data pipelines "
+            "using Python, SQL, and AWS."
+        )
+        fit = analyze_jd_fit(jd, role="Data & Business Technology Consultant")
+        self.assertEqual(fit["primary_domain"], "logistics_supply_chain")
+        self.assertIn("SQL", fit["matched_skills"])
+        self.assertIn("Python", fit["matched_skills"])
 
     def test_fetch_jd_markdown_ssrf_guard(self):
         self.assertEqual(fetch_jd_markdown("http://127.0.0.1:8080/internal"), "")

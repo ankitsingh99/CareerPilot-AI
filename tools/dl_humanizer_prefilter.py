@@ -128,64 +128,11 @@ CRITICAL RULES:
 FACTS:
 {filtered_facts}
 """
-    res = ""
-    if is_on_demand_enabled():
-        print("[DL Pre-Filter] Sending pre-filtered factual data to OpenRouter Free Tier LLM (tier=draft)...")
-        res = ask(
-            prompt=prompt,
-            system="You are an elite executive career writer. You write grounded, punchy, authentic prose. You strictly avoid hyphens, over-excited AI openings, and corporate buzzwords. Output only the final letter directly.",
-            model="cohere/north-mini-code:free",
-            task_tier="draft",
-            temperature=0.6,
-            max_tokens=3500,
-            extract_letter=True,
-        )
-    else:
-        res = ask_local_ollama_if_online(
-            prompt=prompt,
-            system="You are an elite executive career writer. Output only the final letter directly.",
-            max_tokens=1500,
-            temperature=0.6,
-        )
-        if not res:
-            print("[DL Pre-Filter] OpenRouter skipped (On-Demand Directive). Returning locally filtered facts for frontier drafting or pass --allow-openrouter.")
-            return filtered_facts
-    
-    # Extra safety pass: replace any remaining hyphenated compound words and eliminate fake excitement openers
-    cleaned_lines = []
-    for line in res.split('\n'):
-        line_clean = line
-        # Strip generic AI excitement starters if any slipped through
-        line_clean = re.sub(r"^(?:I am excited to apply for|I am thrilled to apply for|I am eager to apply for|I am pleased to submit my application for)\s*", "Applying for ", line_clean, flags=re.IGNORECASE)
-        
-        if line_clean.strip().startswith('#') or line_clean.strip().startswith(f'**{candidate_first}') or '|' in line_clean or 'linkedin.com' in line_clean:
-            cleaned_lines.append(line_clean)
-        else:
-            cleaned_lines.append(line_clean.replace(' - ', ', ').replace('-', ' '))
-            
-    combined_raw = '\n'.join(cleaned_lines)
-
-    # Turnitout Threat Erasure & Programmatic Humanizer Pass
-    try:
-        from parsers.turnitout_engine import TurnitoutEngine
-        t_engine = TurnitoutEngine(seed=42)
-        humanized_res = t_engine.humanize(combined_raw, aggressiveness=0.7)
-        print(f"[Turnitout Post-Pass] Watermarks purged: {humanized_res['watermarks_purged']} | Transforms: {humanized_res['total_transforms']} | ZipPy Entropy: {humanized_res['final_entropy']['entropy_score']}")
-        final_candidate = humanized_res['humanized_text']
-    except Exception as e:
-        print(f"[Turnitout Post-Pass Warning] Fallback to raw: {e}")
-        final_candidate = combined_raw
-
-    # Two-Tier Integrity & Proofreading Pass (Local Linter + OpenRouter Free Proofreader)
-    try:
-        from parsers.linter import lint_and_format
-        lint_res = lint_and_format(final_candidate, proofread_llm=True, role_title=role_title, company=company)
-        if not lint_res["passed"]:
-            print(f"[Cover Letter Guard] Warning: Detected issues in draft: {lint_res['violations']}")
-        return lint_res["clean_text"]
-    except Exception as e:
-        print(f"[Cover Letter Guard Warning] Linter pass failed: {e}")
-        return final_candidate
+    # Gemini-Exclusive Cover Letter Rule: do not invoke non-Gemini OpenRouter/Ollama LLMs.
+    # Return the locally pre-filtered factual baseline so the active Gemini model performs writing & humanizing directly.
+    _ = (prompt, role_title, company, ask, ask_local_ollama_if_online, is_on_demand_enabled)
+    print("[DL Pre-Filter] Gemini-exclusive cover letter policy active: returning locally filtered facts for Gemini writing & humanizing.")
+    return filtered_facts
 
 
 if __name__ == "__main__":

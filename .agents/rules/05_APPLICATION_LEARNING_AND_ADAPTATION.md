@@ -110,3 +110,7 @@ Before filling any form field or submitting any application:
 - **Organization / Department**: `D2C Retail & E-Commerce Operations`.
 - **Location**: `Delhi / Remote, India`.
 
+### N. Cover Letter Closing Phrasing Constraint
+- **Never write `(0 days notice)` or `0 days notice` in cover letters.** Keep availability phrasing natural without robotic notice-period tags.
+- **Never write city-specific `interviews in <City>` (e.g., `interviews in Gurugram`) in cover letters.** Use plain `interview` instead (e.g., `"available for an interview at your convenience"`).
+

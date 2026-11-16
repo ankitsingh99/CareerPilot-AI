@@ -146,6 +146,50 @@ DOMAIN_PROFILES: Dict[str, Dict[str, Any]] = {
         ),
         "impact_focus": "automated MIS reporting, KPI variance tracking, and predictive analytics",
     },
+    "risk_fraud": {
+        "weight": 2,
+        "triggers": (
+            "fraud", "risk", "risk analytics", "risk framework", "fraud strategy",
+            "anomaly", "audit", "leakage", "discrepanc", "compliance", "billing error",
+        ),
+        "referral_clause": (
+            "including building automated AWB weight-audit pipelines cutting shipping leakage by 25%, "
+            "SQL anomaly/data-quality models cutting production issues by 40%, and HIPAA governance pipelines at ZS Associates"
+        ),
+        "dm_clause": (
+            "building SQL & Python anomaly/discrepancy models (cutting production issues 40%), automated "
+            "carrier audit pipelines (cutting shipping leakage 25%), and HIPAA privacy controls"
+        ),
+        "email_bullet": (
+            "- Risk, Audit & Anomaly Detection (Rush by Kira & ZS Associates): Built an automated Python/SQL "
+            "carrier AWB audit pipeline that flagged billing weight discrepancies and automated vendor disputes, "
+            "cutting unrecovered annual shipping leakages by 25%. At ZS Associates, engineered a SQL Data-Quality-Model "
+            "backed by Scikit-learn anomaly detection and HIPAA privacy masking, reducing production issues by 40% (Super Innova award)."
+        ),
+        "impact_focus": "anomaly detection, automated risk auditing, and SQL/Python governance frameworks",
+    },
+    "logistics_supply_chain": {
+        "weight": 2,
+        "triggers": (
+            "logistics", "freight", "parcel", "awb", "shipment", "supply chain",
+            "delivery", "dispatch", "tms", "fulfillment", "rto", "express",
+        ),
+        "referral_clause": (
+            "including building an automated carrier AWB weight-audit pipeline cutting unrecovered shipping "
+            "leakages by 25%, bi-directional inventory/SKU agents, and multi-vendor Spark/Airflow data pipelines"
+        ),
+        "dm_clause": (
+            "building an automated AWB weight-audit & carrier dispute pipeline (-25% shipping leakage), "
+            "bi-directional inventory agents, and high-scale Spark/Snowflake/Airflow ETL (-40% incidents)"
+        ),
+        "email_bullet": (
+            "- Logistics Auditing, Inventory Sync & Automation (Rush by Kira): Engineered an automated carrier AWB "
+            "audit pipeline flagging weight billing errors and automating vendor disputes, cutting unrecovered annual "
+            "shipping leakages by 25%. Built bi-directional Shopify inventory agents eliminating multi-channel SKU "
+            "discrepancies and predictive restock models driving +15% conversion and +30% sales."
+        ),
+        "impact_focus": "carrier billing audits, multi-node data integration, and supply chain analytics",
+    },
 }
 
 
@@ -364,13 +408,15 @@ def generate_outreach_email(
     if tone == "technical":
         opener = (
             f"Reaching out regarding the {clean_role} opening at {company}. "
-            f"My work centers on {primary['impact_focus']} backed by production SQL, Python, "
+            f"Over the past {cand['yoe_int']} years across Rush by Kira, ZS Associates, and TresVista, "
+            f"my work has centered on {primary['impact_focus']} backed by production SQL, Python, "
             f"and cloud pipelines rather than static manual reporting."
         )
     else:
         opener = (
             f"Hope you are having a good week. I came across the {clean_role} opening at {company} "
-            f"and wanted to share my profile for your consideration. My background pairs analytics "
+            f"and wanted to share my profile for your consideration. With {cand['yoe_int']} years of experience "
+            f"across Rush by Kira, ZS Associates, and TresVista, my background pairs analytics "
             f"and engineering execution directly suited to {primary['impact_focus']}."
         )
 
@@ -385,7 +431,7 @@ def generate_outreach_email(
 
     core_stack = (
         "Core Stack: Python, PySpark, SQL (PostgreSQL, Snowflake, Trino, Oracle), Scikit-learn, "
-        "Apache Airflow, Tableau / Power BI, Advanced Excel, AWS (S3, SNS), and REST/Webhook AI Agents."
+        "Apache Airflow, Tableau / Power BI, Advanced Excel, AWS (S3, SNS), and AI Agents."
     )
 
     body_parts: List[str] = []
@@ -409,18 +455,14 @@ def generate_outreach_email(
         body_parts.extend(["", f"Reference Role: {url.strip()}"])
 
     if include_hr_fields:
-        loc_note = f"{cand['city']} (Ready for {location})" if location else cand["city"]
+        loc_phrase = f"based in {cand['city']} and open to {location}" if location else f"based in {cand['city']}"
         body_parts.extend([
             "",
-            "My CV is attached. Requested details:",
-            "",
-            f"Total exp: {cand['yoe_int']} years",
-            f"Current ctc: {cand['ctc_lpa']} LPA",
-            f"Expected ctc: {cand['exp_ctc_lpa']} LPA",
-            f"Location: {loc_note}",
-            f"Notice period: {cand['notice_period']}",
-            "",
-            "I can join immediately and am available for a call or an in-person discussion.",
+            (
+                f"I have attached my CV for review. My current CTC is {cand['ctc_lpa']} LPA "
+                f"with an expected CTC of {cand['exp_ctc_lpa']} LPA, and I am currently {loc_phrase}, "
+                f"available to join immediately. I would welcome the chance to connect for a discussion."
+            ),
         ])
     else:
         body_parts.extend([

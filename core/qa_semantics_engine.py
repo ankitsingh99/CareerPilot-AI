@@ -188,7 +188,7 @@ def ask_openrouter_free_llm(question: str, options: Optional[List[str]] = None, 
         "Your duty is to output ONLY the exact, factual string to enter or select into the form.\n"
         "Do NOT provide explanations, pleasantries, markdown, or commentary.\n"
         "CRITICAL RULE: Whenever experience, tenure, or duration is asked (e.g. years of experience, days notice, joining time, duration with a tool), "
-        "NEVER write 'year', 'month', 'day', or decimals. Just write the integer value (e.g. 4 or 0).\n"
+        "NEVER write 'year', 'month', 'day', or decimals. Just write the integer value (e.g. 5 or 0).\n"
         f"Candidate: {cand['name']}\n"
         f"Designation: {cand['designation']}\n"
         f"Total Experience: {cand['total_yoe']} years\n"
@@ -209,7 +209,7 @@ def ask_openrouter_free_llm(question: str, options: Optional[List[str]] = None, 
         user_prompt += "Select and return ONLY the single exact option text from the list that best represents the candidate."
     else:
         if field_type == "number":
-            user_prompt += "Return ONLY a single numeric value (e.g., 4 or 0 or 1800000)."
+            user_prompt += "Return ONLY a single numeric value (e.g., 5 or 0 or 1800000)."
         elif field_type == "textarea":
             user_prompt += "Return a concise, factual professional response (2-3 sentences max) without corporate buzzwords."
         else:
@@ -224,7 +224,7 @@ def ask_openrouter_free_llm(question: str, options: Optional[List[str]] = None, 
         route = get_task_route(task_name, default_tier=task_tier, auto_evaluate=True)
         if route.get("openrouter_tier") == "heavy":
             task_tier = "heavy"
-            if route.get("requires_frontier"):
+            if is_on_demand_enabled() and route.get("requires_frontier"):
                 print(
                     f"[mistake_router] '{task_name}' requires frontier oversight "
                     f"(score={route['severity_score']}, mistakes={route['mistake_count']}); "
@@ -439,6 +439,39 @@ class QASemanticsEngine:
         return ans
 
     @classmethod
+    def extract_upper_salary_from_text(cls, text: str) -> Optional[Tuple[str, str]]:
+        """Extract the upper compensation bound (INR, LPA) from a JD salary/budget range."""
+        if not text:
+            return None
+        # Match annual numeric ranges like '1200000 - 1800000' or '12,00,000 - 18,00,000'
+        m_inr = re.search(
+            r"(?:₹|rs\.?|inr)?\s*(\d[\d,]{4,})\s*(?:-|to|–)\s*(?:₹|rs\.?|inr)?\s*(\d[\d,]{4,})",
+            text,
+            re.IGNORECASE,
+        )
+        if m_inr:
+            high_raw = re.sub(r"[^\d]", "", m_inr.group(2))
+            if high_raw.isdigit() and int(high_raw) >= 100000:
+                high_val = int(high_raw)
+                lpa_val = str(int(round(high_val / 100000)))
+                return high_raw, lpa_val
+        # Match LPA / Lacs ranges like '12 - 18 LPA'
+        m_lpa = re.search(
+            r"(\d+(?:\.\d+)?)\s*(?:-|to|–)\s*(\d+(?:\.\d+)?)\s*(?:lpa|lacs?|lakhs?)\b",
+            text,
+            re.IGNORECASE,
+        )
+        if m_lpa:
+            try:
+                lpa_num = float(m_lpa.group(2))
+                inr_num = int(round(lpa_num * 100000))
+                lpa_str = str(int(lpa_num)) if lpa_num.is_integer() else str(lpa_num)
+                return str(inr_num), lpa_str
+            except ValueError:
+                pass
+        return None
+
+    @classmethod
     def match_question(
         cls,
         label: str,
@@ -446,13 +479,16 @@ class QASemanticsEngine:
         options: Optional[List[str]] = None,
         upper_salary: Optional[Tuple[str, str]] = None
     ) -> str:
+        lbl_clean = (label or "").strip().lower()
+        if any(k in lbl_clean for k in ["how many years", "years of experience", "years of work experience", "number of years", "years have you"]):
+            if field_type in ("text", "tel", "url"):
+                field_type = "number"
         res = cls._match_question_core(
             label=label,
             field_type=field_type,
             options=options,
             upper_salary=upper_salary
         )
-        lbl_clean = (label or "").strip().lower()
         return cls.sanitize_experience_or_duration(res, lbl_clean, field_type=field_type)
 
     @classmethod
@@ -469,6 +505,11 @@ class QASemanticsEngine:
         """
         cand = load_candidate_context()
         lbl = (label or "").strip().lower()
+        if upper_salary is None:
+            env_upper_inr = os.getenv("CAREERPILOT_JOB_UPPER_SALARY_INR", "").strip()
+            env_upper_lpa = os.getenv("CAREERPILOT_JOB_UPPER_SALARY_LPA", "").strip()
+            if env_upper_inr:
+                upper_salary = (env_upper_inr, env_upper_lpa or str(int(round(int(env_upper_inr) / 100000))))
 
         # If options are provided, check if any option matches common preferences first
         if options:
@@ -490,8 +531,9 @@ class QASemanticsEngine:
             # Sourcing / Referral Source options
             if any(k in lbl for k in ["how did you hear", "source", "hear about this", "where did you hear"]):
                 for pref in [
+                    "career site", "company career site", "careers site",
                     "direct to careers at agoda", "direct to careers", "careers website",
-                    "company website", "career website", "company career site", "careers page",
+                    "company website", "career website", "careers page",
                     "social network (e.g. linkedin", "external job board", "linkedin"
                 ]:
                     for opt in options:
@@ -508,12 +550,13 @@ class QASemanticsEngine:
             # Yes / No options
             if any(k in lbl for k in [
                 "authorized", "relocate", "hybrid", "onsite", "travel", "background check",
-                "drug", "consent", "privacy", "terms", "agree", "shift", "shifts", "us hours",
+                "drug", "consent", "privacy", "privacy notice", "terms", "agree", "shift", "shifts", "us hours",
                 "passport", "valid passport", "relocate to bangkok", "sms updates", "text/sms",
                 "newsletters", "email me about other job openings", "use of personal data"
             ]):
                 for opt in options:
-                    if opt.strip().lower() == "yes" or opt.strip().lower().startswith("yes") or "willing" in opt.lower():
+                    opt_l = opt.strip().lower()
+                    if opt_l in ("yes", "i agree", "i consent", "agree", "consent") or opt_l.startswith("yes") or "willing" in opt_l or "consent" in opt_l or "agree" in opt_l:
                         return opt.strip()
 
             if any(k in lbl for k in [
@@ -521,7 +564,7 @@ class QASemanticsEngine:
                 "worked with", "worked before", "previously employed", "previous employment", "physical ailment",
                 "ailment", "state of health", "interview at", "interviewed", "interview in last", "appeared for an interview",
                 "deloitte", "independent auditor", "subsidiary entities", "associated with deloitte",
-                "booking holdings", "presently employed", "previously applied"
+                "booking holdings", "presently employed", "previously applied", "currently working for", "or its entity", "its entity", "working for"
             ]):
                 for opt in options:
                     if opt.strip().lower() == "no" or opt.strip().lower().startswith("no"):
@@ -543,7 +586,11 @@ class QASemanticsEngine:
 
             # Experience options
             if any(k in lbl for k in ["experience", "yoe", "years"]):
-                for pref in ["4", "3-5", "3 to 5", "4-5", "4+", "less than 5", "less than 8"]:
+                for exact_pref in [cand["yoe_int"], "4", "5"]:
+                    for opt in options:
+                        if opt.strip().lower() == exact_pref:
+                            return opt.strip()
+                for pref in ["3-5", "3 to 5", "4-5", "4+", "less than 5", "less than 8", "4"]:
                     for opt in options:
                         if pref in opt.lower():
                             return opt.strip()
@@ -655,6 +702,13 @@ class QASemanticsEngine:
                     if "intermediate" in opt.lower():
                         return opt.strip()
 
+            # Schedule / Shift willingness options
+            if any(k in lbl for k in ["types of schedules", "schedules you are willing", "work schedule", "shift"]):
+                for pref in ["flexible", "all schedules", "any", "full", "standard", "day", "yes"]:
+                    for opt in options:
+                        if pref in opt.lower():
+                            return opt.strip()
+
             # Domain experience & Positive qualifications (Yes)
             if any(k in lbl for k in [
                 "experience in pharma", "pharma domain", "pharmaceutical", "healthcare", "life sciences",
@@ -683,7 +737,7 @@ class QASemanticsEngine:
             "current company", "current employer", "present company", "present employer",
             "company name", "most recent employer", "employer name", "organization name",
             "current organization"
-        ]) and not any(k in lbl for k in ["previous", "why this", "about us", "referred"]):
+        ]) and not any(k in lbl for k in ["previous", "why this", "about us", "referred", "working for", "or its entity", "its entity"]):
             return cand["current_company"]
 
         # ── 1.9 COMPENSATION NEGOTIABILITY ───────────────────────────────────────
@@ -919,6 +973,12 @@ class QASemanticsEngine:
         if any(k in lbl for k in ["delhi", "noida", "gurugram", "gurgaon", "ncr"]) and any(k in lbl for k in ["currently", "reside", "based in", "from"]):
             return "Yes"
 
+        # Specific employer / entity employment check (Always 'No' per user candidate rule)
+        if any(k in lbl for k in ["working for", "or its entity", "its entity", "employed by", "currently working at", "currently employed at"]) or (
+            any(k in lbl for k in ["currently employed", "currently working"]) and any(k in lbl for k in ["by", "for", "at", "with", "entity", "subsidiary", "group"])
+        ):
+            return "No"
+
         # Currently Employed -> Yes
         if any(k in lbl for k in ["currently employed", "are you employed", "presently employed"]):
             return "Yes"
@@ -935,8 +995,8 @@ class QASemanticsEngine:
         if any(k in lbl for k in [
             "visa sponsorship", "require sponsorship", "need sponsorship", "require visa",
             "future sponsorship", "employer-sponsored", "employer sponsored",
-            "employee referral", "referred by", "personal relationship",
-            "current employee", "know anyone", "family member", "relative",
+            "employee referral", "referred by", "personal relationship", "personal relations",
+            "blood relative", "current employee", "know anyone", "family member", "relative",
             "current or former", "previously employed", "previous employment",
             "mindbody", "classpass", "egym", "booker",
             "felony", "criminal", "convicted", "crime", "misdemeanor",
@@ -955,9 +1015,10 @@ class QASemanticsEngine:
             "open for 6 months contract", "open for contract", "contractor", "open for a contract",
             "exp in dbt and snowflake", "dbt and snowflake", "exp in dbt", "dbt", "snowflake",
             "travel", "willing to travel", "rotational", "flexible hours", "timezones",
-            "us hours", "shift", "shifts", "night shift", "night shifts", "background check", "drug test",
+            "us hours", "shift", "shifts", "night shift", "night shifts", "schedule", "schedules",
+            "background check", "drug test",
             "passport", "valid passport", "indian passport",
-            "agree to", "consent", "privacy policy", "terms and conditions", "gdpr",
+            "agree to", "consent", "privacy policy", "privacy notice", "read and understand the privacy", "privacy statement", "declare that you have read", "terms and conditions", "gdpr",
             "talent community", "receive alerts", "future job alerts",
             "text messages", "receive sms", "consent to receive text"
         ]):
@@ -967,7 +1028,7 @@ class QASemanticsEngine:
         if field_type in ("text", "textarea"):
             if any(k in lbl for k in ["reason for seeking a job change", "reason for change", "why change", "why looking for a change"]):
                 return (
-                    "Seeking a higher-impact role in quantitative data engineering and analytics to leverage 4.8 years of "
+                    "Seeking a higher-impact role in quantitative data engineering and analytics to leverage 5 years of "
                     "experience building high-scale data pipelines and statistical workflows."
                 )
             if any(k in lbl for k in ["why do you want to join", "why this company", "why us", "interest in joining", "interested in joining"]):
@@ -975,15 +1036,17 @@ class QASemanticsEngine:
                     "Excited to leverage my data engineering and analytics consulting background to solve mission-critical "
                     "enterprise challenges, build reliable data systems, and deliver measurable operational impact."
                 )
-            if any(k in lbl for k in ["tell us about yourself", "summary", "profile", "overview", "pitch", "brief bio"]):
+            if any(k in lbl for k in ["primary skill", "primary skills", "profileskills", "key skills", "technical skills", "type the skill"]):
+                return cand["skills"]
+            if any(k in lbl for k in ["tell us about yourself", "summary", "profile", "overview", "pitch", "brief bio"]) and "skill" not in lbl:
                 return (
-                    "Business & Technology Consultant with 4.8 years of experience across healthcare commercial analytics, "
+                    "Business & Technology Consultant with 5 years of experience across healthcare commercial analytics, "
                     "Big Data pipelines, and AI agent automation. Ex-ZS Associates with a track record of driving data quality, "
                     "reconciliation agents, and high-performance ETL architectures."
                 )
             if any(k in lbl for k in ["what makes you a good fit", "why should we hire you", "why are you the best"]):
                 return (
-                    "With 4.8 years of experience spanning Big Data pipelines, SQL performance tuning, and AI agent automation "
+                    "With 5 years of experience spanning Big Data pipelines, SQL performance tuning, and AI agent automation "
                     "at ZS Associates and Rush by Kira, I combine strong analytical rigor with practical execution."
                 )
             if any(k in lbl for k in ["leadership", "management", "team", "people management"]):
@@ -1048,6 +1111,10 @@ class QASemanticsEngine:
         Synthesize an autonomous, fact-based answer for any screening question
         directly from candidate profile without prompting the user.
         """
+        q_clean = (question or "").strip().lower()
+        if any(k in q_clean for k in ["how many years", "years of experience", "years of work experience", "number of years", "years have you"]):
+            if field_type in ("text", "tel", "url"):
+                field_type = "number"
         ans = cls.match_question(question, field_type=field_type, options=options)
         if ans and ans != "N/A":
             return ans
@@ -1086,7 +1153,7 @@ class QASemanticsEngine:
             return cand["yoe_int"]
 
         if any(k in lbl for k in ["experience", "background", "work", "project"]):
-            return "Extensive experience designing scalable data pipelines, SQL transformations, and analytics solutions across Python, PostgreSQL, and Snowflake with 4.8 years of proven delivery."
+            return "Extensive experience designing scalable data pipelines, SQL transformations, and analytics solutions across Python, PostgreSQL, and Snowflake with 5 years of proven delivery."
         if any(k in lbl for k in ["why", "reason", "interest"]):
             return "Excited to leverage my data engineering and analytics consulting background to solve mission-critical data challenges and deliver high-impact enterprise solutions."
 

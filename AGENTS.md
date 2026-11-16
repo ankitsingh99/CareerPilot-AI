@@ -12,6 +12,12 @@ For any person using this tool:
 2. Configure candidate credentials, contact info, and compensation in the local, gitignored `.env` file (see `.env.example`).
 3. Run `python tools/generate_workspace_from_master.py` to instantiate or rehydrate your localized workspace files (`AGENTS.md`, `01-candidate-profile.md`, `candidate_preferences_and_rules.md`, and `application_settings.py`).
 
+## Part 0: Mandatory Pre-Work Gate (Skills, Rules & Available Tools)
+Before starting work on ANY task in this repository:
+1. **Read & Apply Relevant Skills:** Inspect `.agents/skills/*/SKILL.md`, `.agents/plugins/*/skills/*/SKILL.md`, and available session skills before acting.
+2. **Review All Active Rules:** Check `AGENTS.md`, `.agents/rules/*.md`, and `user_inputs/candidate_preferences_and_rules.md` for hard constraints and learned user preferences.
+3. **Inspect Available Tools & Plugins:** Check existing reusable modules across `tools/`, `parsers/`, `core/`, `automation/`, MCP servers, and plugins so existing deterministic/universal engines are always used first.
+
 ---
 
 ## Part 1: Candidate Profile Specification Template
@@ -93,6 +99,8 @@ The following behavioral and operational rules apply across all execution engine
 - **Zero AI Clichés & Slop:** Never use banned corporate jargon (`spearheaded`, `leveraged`, `delve`, `synergy`, `testament`, `fostered`, `pivotal`, `game-changer`, `thrilled to apply`).
 - **Humanized Writing & Asymmetry:** Keep high sentence-length variance (standard deviation > 4.5 words). Favor concise, punchy micro-narratives over robotic paragraph monotony.
 - **Humanizer Pre-Filter:** ALWAYS run `tools/dl_humanizer_prefilter.py` on factual inputs before generating cover letters or application responses.
+- **Cover Letter Closing Phrasing Constraint:** NEVER write `(0 days notice)` / `0 days notice` or city-specific `interviews in <City>` in cover letters; just `interview` cleanly.
+- **Gemini-Exclusive Cover Letter Writing & Humanizing:** Exclusively use the active **Gemini** model for writing, rewriting, proofreading, and humanizing cover letters. NEVER delegate cover letter drafting or humanizing to non-Gemini LLMs (`cohere/north-mini-code:free`, `qwen2.5:7b` Ollama, `nvidia/*`, `minimax/*`, etc.). Use local deterministic scripts (`tools/dl_humanizer_prefilter.py`, `parsers/turnitout_engine.py`, `tools/validate_cover_letter.py`, `tools/verify_cv_facts.py`) only for filtering, stylometric/entropy checks, structural linting, and CV fact auditing.
 
 ### 2.2 Model & Cost Directives
 - **STRICT ZERO-COST OPENROUTER DIRECTIVE (NO PAID CALLS EVER):**
@@ -198,6 +206,7 @@ Standard answers to common screening questions:
 | **Talent Community** | `join talent community / receive alerts` | `Yes` (Always opt-in) |
 | **Data Consent / GDPR** | `consent to data processing / privacy policy` | `Yes` / `Agree` |
 | **Personal Relationship** | `know anyone at the company / relationship with employee` | `No` |
+| **Current Employer / Entity Affiliation** | `currently working for (company\|entity\|subsidiary)` | `No` |
 | **Criminal Record / Felony** | `convicted of a crime / felony record` | `No` |
 | **Non-Compete** | `subject to non-compete / non-solicit agreement` | `No` |
 

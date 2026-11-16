@@ -160,39 +160,73 @@ USER_AGENT = (
 )
 
 def get_candidate_credentials() -> tuple[dict, str, str, list[str]]:
-    """Returns (candidate_dict, default_email, default_password, alt_passwords) from client_secret.json."""
+    """
+    Resolve candidate profile, default email, primary password, and alternate passwords.
+    Combines client_secret.json, ~/.config/job-agent/.candidate_secrets.json,
+    and .env / environment credential variables without dropping alternates.
+    """
     prof = DEFAULT_CANDIDATE.copy()
-    email = prof["email"]
-    password = ""
-    alt_passwords: list[str] = []
+    email = (os.getenv("CANDIDATE_EMAIL") or prof.get("email") or "").strip()
+    passwords: list[str] = []
 
-    target_secret = SECRETS_FILE if SECRETS_FILE.exists() else (GLOBAL_SECRETS_FILE if GLOBAL_SECRETS_FILE.exists() else None)
-    if target_secret:
+    def _add_pwd(val: str | None) -> None:
+        s = (val or "").strip()
+        if s and s not in passwords:
+            passwords.append(s)
+
+    secret_candidates = [
+        SECRETS_FILE,
+        GLOBAL_SECRETS_FILE,
+        Path.home() / ".config" / "job-agent" / ".candidate_secrets.json",
+        LEGACY_SECRETS_FILE,
+    ]
+    seen_paths: set[Path] = set()
+    for sp in secret_candidates:
         try:
-            data = json.loads(target_secret.read_text())
-            if "candidate_profile" in data:
-                prof.update(data["candidate_profile"])
-            if "credentials" in data:
-                creds = data["credentials"]
-                email = creds.get("default_email", email)
-                password = creds.get("default_password", password)
-                for key in ["alternate_password", "alternate_password1", "alternate_password2"]:
-                    val = creds.get(key)
-                    if val and val not in alt_passwords and val != password:
-                        alt_passwords.append(val)
+            resolved = sp.resolve()
         except Exception:
-            pass
-    elif LEGACY_SECRETS_FILE.exists():
+            resolved = sp
+        if resolved in seen_paths or not sp.exists():
+            continue
+        seen_paths.add(resolved)
         try:
-            data = json.loads(LEGACY_SECRETS_FILE.read_text())
-            email = data.get("email", email)
-            password = data.get("standard_ats_password", password)
+            data = json.loads(sp.read_text(encoding="utf-8"))
         except Exception:
-            pass
+            continue
+
+        profile_block = data.get("candidate_profile")
+        if isinstance(profile_block, dict):
+            for k, v in profile_block.items():
+                if v and not prof.get(k):
+                    prof[k] = v
+
+        creds = data.get("credentials") if isinstance(data.get("credentials"), dict) else {}
+        if not email:
+            email = (creds.get("default_email") or data.get("email") or "").strip()
+
+        _add_pwd(creds.get("default_password"))
+        _add_pwd(data.get("standard_ats_password"))
+        _add_pwd(data.get("password"))
+        for alt_key in ("alternate_password", "alternate_password1", "alternate_password2"):
+            _add_pwd(creds.get(alt_key))
+            _add_pwd(data.get(alt_key))
+
+    for env_key in (
+        "CANDIDATE_STANDARD_PASSWORD",
+        "CANDIDATE_PASSWORD",
+        "STANDARD_ATS_PASSWORD",
+        "CANDIDATE_ALT_PASSWORD",
+        "CANDIDATE_ALTERNATE_PASSWORD",
+        "CANDIDATE_ALTERNATE_PASSWORD1",
+        "CANDIDATE_ALTERNATE_PASSWORD2",
+    ):
+        _add_pwd(os.getenv(env_key))
 
     if email and not prof.get("email"):
         prof["email"] = email
 
+    password = passwords[0] if passwords else ""
+    alt_passwords = passwords[1:] if len(passwords) > 1 else []
     return prof, email, password, alt_passwords
 
 # Dynamic CANDIDATE instance loaded from local client_secret.json
@@ -338,13 +372,23 @@ def open_persistent_browser():
                 pass
 
     try:
-        ctx = pw.chromium.launch_persistent_context(
-            user_data_dir=str(SESSION_DIR),
-            headless=False,
-            no_viewport=True,
-            user_agent=USER_AGENT,
-            args=["--start-maximized", "--no-default-browser-check", "--remote-debugging-port=9222"],
-        )
+        try:
+            ctx = pw.chromium.launch_persistent_context(
+                user_data_dir=str(SESSION_DIR),
+                channel="chrome",
+                headless=False,
+                no_viewport=True,
+                user_agent=USER_AGENT,
+                args=["--start-maximized", "--no-default-browser-check", "--remote-debugging-port=9222"],
+            )
+        except Exception:
+            ctx = pw.chromium.launch_persistent_context(
+                user_data_dir=str(SESSION_DIR),
+                headless=False,
+                no_viewport=True,
+                user_agent=USER_AGENT,
+                args=["--start-maximized", "--no-default-browser-check", "--remote-debugging-port=9222"],
+            )
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         return pw, ctx, page
     except Exception as e:
@@ -559,6 +603,33 @@ def get_portal_credentials(url: str) -> tuple[str, str, list[str]]:
                 pass
 
     return def_email, def_pwd, alt_passwords
+
+
+def has_exact_portal_credentials(url: str) -> bool:
+    """Return True only when an exact domain/company entry exists in the local secrets registry."""
+    domain = re.sub(r"^https?://", "", url).split("/")[0].lower()
+    secrets_paths = [
+        Path(__file__).parent.parent / "user_inputs" / "candidate_accounts.json",
+        Path.home() / ".config" / "job-agent" / ".candidate_secrets.json",
+        GLOBAL_SECRETS_FILE,
+        SECRETS_FILE,
+    ]
+    for sp in secrets_paths:
+        if sp.exists():
+            try:
+                data = json.loads(sp.read_text())
+                for acc in data.get("accounts", []):
+                    web = (acc.get("website") or "").lower()
+                    comp = (acc.get("company") or "").lower()
+                    if ((web and (web in url.lower() or domain in web)) or (comp and comp in url.lower())) and (acc.get("password") or "").strip():
+                        return True
+                for comp, acc in data.get("account_exceptions", {}).items():
+                    web = (acc.get("website") or "").lower()
+                    if ((web and domain in web) or (comp.lower() in url.lower())) and (acc.get("password") or "").strip():
+                        return True
+            except Exception:
+                pass
+    return False
 
 
 def _is_account_locked(page: Page) -> bool:
@@ -777,13 +848,18 @@ def _attempt_login_step(page: Page, email: str, password: str, is_retry: bool = 
             if all(x not in curr_url for x in ["login.jsf", "/login", "signin", "accessmanagement"]):
                 return True, False
 
+        # Check if an OTP / email verification screen was triggered by valid credentials
+        page_text = (page.inner_text("body") or "").lower()
+        if any(v in page_text for v in ["verification code", "enter code", "verify your email", "two-step", "one-time passcode"]):
+            return False, False
+
         # Check for explicit invalid credentials / rejection message
-        page_text = page.inner_text("body").lower()
         if any(err in page_text for err in [
             "invalid user", "invalid email", "invalid password", "incorrect",
             "doesn't exist", "not found", "wrong email address or password",
             "user name and password do not match", "authentication failed",
-            "check your password", "credentials are invalid"
+            "check your password", "credentials are invalid",
+            "couldn't verify", "unable to sign in", "didn't recognize",
         ]):
             print("[auth:login] Credentials rejected by portal banner.")
             return False, False
@@ -802,25 +878,108 @@ def _attempt_login(page: Page, email: str, password: str) -> bool:
     return success
 
 
+def _is_create_account_screen(page: Page) -> bool:
+    """Return True when the current view renders a create-account / registration form."""
+    selectors = [
+        "input[data-automation-id='verifyPassword']",
+        "input[id*='verifyPassword']",
+        "input[name*='verifyPassword']",
+        "button[data-automation-id='createAccountSubmitButton']",
+        "div[data-automation-id='createAccountPage']",
+    ]
+    for sel in selectors:
+        try:
+            el = page.query_selector(sel)
+            if el and el.is_visible():
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _needs_verification_challenge(page: Page) -> bool:
+    """Return True if portal is awaiting email verification link or OTP input."""
+    try:
+        logged_in = page.query_selector(
+            "button[data-automation-id='utilityMenuButton'], "
+            "div[data-automation-id='file-upload-drop-zone'], "
+            "button[data-automation-id='bottom-navigation-next-button']"
+        )
+        if logged_in and logged_in.is_visible():
+            return False
+        body = (page.inner_text("body") or "").lower()
+        return any(v in body for v in [
+            "verification code", "enter code", "verify your email",
+            "activation link", "one-time passcode", "otp",
+        ])
+    except Exception:
+        return False
+
+
+def _switch_to_signin_screen(page: Page) -> bool:
+    """If landed on Create Account, click 'Sign In' link so login is attempted first."""
+    if not _is_create_account_screen(page):
+        return False
+    switch_selectors = [
+        "button[data-automation-id='signInLink']",
+        "a[data-automation-id='signInLink']",
+        "button:has-text('Sign In')",
+        "a:has-text('Sign In')",
+        "button:has-text('Already have an account')",
+        "a:has-text('Already have an account')",
+    ]
+    for sel in switch_selectors:
+        try:
+            btn = page.query_selector(sel)
+            if btn and btn.is_visible():
+                aid = (btn.get_attribute("data-automation-id") or "").lower()
+                if "submit" in aid:
+                    continue
+                print(f"[auth:switch] Landed on Create Account; switching to Sign In via {sel}...")
+                btn.click()
+                for _ in range(10):
+                    if not _is_create_account_screen(page):
+                        return True
+                    time.sleep(0.4)
+                return not _is_create_account_screen(page)
+        except Exception:
+            pass
+    return False
+
+
+def _resolve_registration_credentials(default_email: str, default_password: str) -> tuple[str, str]:
+    """Resolve email and password for account creation, honoring .env when set."""
+    reg_email = (os.getenv("CANDIDATE_EMAIL") or default_email or "").strip()
+    reg_password = (
+        os.getenv("CANDIDATE_STANDARD_PASSWORD")
+        or os.getenv("CANDIDATE_PASSWORD")
+        or os.getenv("STANDARD_ATS_PASSWORD")
+        or default_password
+        or ""
+    ).strip()
+    return reg_email, reg_password
+
+
 def auto_authenticate_or_register(page: Page, ats: str, url: str) -> bool:
     """
-    Candidate Authentication & Registration Pipeline:
-    1. Detects login/authentication screen or modal.
-    2. Loads candidate credentials (default password + alternate passwords).
-    3. Attempts login with default password.
-    4. If default password fails, iterates through alternate passwords.
-    5. If password and alt passwords fail, proceeds to register the candidate.
+    Independent Candidate Authentication & Registration Pipeline:
+    1. Detects login/create-account screen or modal (switching Create Account -> Sign In first).
+    2. Loads candidate & portal credentials (primary password + alternate passwords).
+    3. Attempts login with primary password, then each unique alternate password (halting on lockout/OTP).
+    4. If stored passwords fail without lockout, creates an account with email & password from .env/secrets.
     """
     curr_url = page.url.lower()
     domain = re.sub(r"^https?://", "", url).split("/")[0].lower()
 
-    # Step 0: Check if login wall or modal is present
+    # Step 0: Check if login/create-account wall or modal is present
     LOGIN_URL_INDICATORS = ["login", "signin", "sign-in", "accessmanagement", "auth", "session", "logon"]
     is_login_page = any(x in curr_url for x in LOGIN_URL_INDICATORS)
     has_pwd_input = False
     try:
         has_pwd_input = bool(page.query_selector(
-            "input[type='password'], div[data-automation-id='signInContent'], "
+            "input[type='password'], input[data-automation-id='verifyPassword'], "
+            "div[data-automation-id='signInContent'], button[data-automation-id='createAccountSubmitButton'], "
+            "button[data-automation-id='signInSubmitButton'], button[data-automation-id='signInLink'], "
             "button[data-automation-id='SignInWithEmailButton'], button:has-text('Sign in with email'), "
             "a[data-automation-id='createAccountLink'], button[data-automation-id='createAccountLink'], "
             "div[data-automation-id='createAccountPage']"
@@ -850,56 +1009,52 @@ def auto_authenticate_or_register(page: Page, ats: str, url: str) -> bool:
     # Step 0c: Prevent infinite loop on same domain
     if domain in _AUTHENTICATION_ATTEMPTS:
         print(f"[auth] Authentication cycle already evaluated for {domain}.")
-        # If already on application form, consider ready
         if page.query_selector("div[data-automation-id='file-upload-drop-zone'], button[data-automation-id='bottom-navigation-next-button']"):
             return True
         return False
 
     _AUTHENTICATION_ATTEMPTS.add(domain)
 
-    # Step 1: Resolve credentials
+    # Step 1: Resolve credentials (portal-specific -> global secrets -> .env)
+    prof, _, def_pwd, def_alts = get_candidate_credentials()
     username, password, alt_passwords = get_portal_credentials(url)
     if not username or not password:
-        print(f"[auth:guard] No credentials available in client_secret for {domain}.")
+        print(f"[auth:guard] No credentials available in secrets/.env for {domain}.")
         alert("Credentials Missing", f"Please sign in manually on {ats.upper()}.")
         return False
 
-    # Step 2: Attempt login with Primary / Default Password
-    print(f"[auth:login] Attempting login for {domain} with primary password as '{username}'...")
-    success, is_locked = _attempt_login_step(page, username, password, is_retry=False)
-    if success:
-        print("[auth:login] Login succeeded with primary password!")
-        return True
-    if is_locked:
+    passwords_to_try: list[str] = []
+    for cand in [password, *alt_passwords, def_pwd, *def_alts]:
+        c = (cand or "").strip()
+        if c and c not in passwords_to_try:
+            passwords_to_try.append(c)
+
+    # Step 2: Always try Sign In first (even if portal defaulted to Create Account)
+    _switch_to_signin_screen(page)
+    for idx, pwd in enumerate(passwords_to_try):
+        if _is_account_locked(page):
+            return False
+        label = "primary" if idx == 0 else f"alternate #{idx}"
+        print(f"[auth:login] Attempting {label} login for {domain} as '{username}'...")
+        success, is_locked = _attempt_login_step(page, username, pwd, is_retry=(idx > 0))
+        if success:
+            print(f"[auth:login] Login succeeded on {label} password!")
+            return True
+        if is_locked:
+            return False
+        if _needs_verification_challenge(page):
+            print(f"[auth:login] Verification / OTP required after login attempt on {domain}.")
+            alert("Sign-In Verification Needed", f"Enter verification code/OTP sent for {domain}.")
+            return False
+
+    # Step 3: All stored passwords failed without lockout -> Create Account using .env/stored credentials
+    reg_email, reg_password = _resolve_registration_credentials(username, password)
+    if not reg_email or not reg_password:
+        alert("Credentials Missing", f"Login failed on {domain} and registration credentials are missing in .env.")
         return False
 
-    # Step 3: Iterate through alternate passwords if primary fails
-    if alt_passwords:
-        for idx, alt_pwd in enumerate(alt_passwords, start=1):
-            if not alt_pwd or alt_pwd == password:
-                continue
-            if _is_account_locked(page):
-                return False
-            print(f"[auth:login] Primary password failed. Trying alternate password #{idx} for '{username}'...")
-            success, is_locked = _attempt_login_step(page, username, alt_pwd, is_retry=True)
-            if success:
-                print(f"[auth:login] Login succeeded with alternate password #{idx}!")
-                company_name = re.sub(r"https?://([^/]+).*", r"\1", url)
-                record_new_account(company=company_name, website=url, username=username, password=alt_pwd)
-                return True
-            if is_locked:
-                return False
-
-    # Step 4: If password and alt passwords fail, proceed to register
-    print(f"[auth] Primary and alternate passwords failed on {domain}. Proceeding to register as directed...")
-    reg_success = _attempt_register(page, CANDIDATE, username, password, ats, url)
-    if reg_success:
-        print("[auth] Registration completed successfully!")
-        return True
-    else:
-        print("[auth] Registration could not be automatically completed. Leaving browser open for candidate.")
-        alert("Registration Action Required", f"Please complete sign in or registration manually on {ats.upper()}.")
-        return False
+    print(f"[auth:register] Stored passwords did not authenticate on {domain}; attempting Create Account as '{reg_email}'...")
+    return _attempt_register(page, prof, reg_email, reg_password, ats, url)
 
 
 def _attempt_register(page: Page, prof: dict, email: str, password: str, ats: str, url: str) -> bool:
@@ -912,8 +1067,9 @@ def _attempt_register(page: Page, prof: dict, email: str, password: str, ats: st
     if not already_on_reg_form:
         # Strict priority: 1. Full Account Creation / Sign Up -> 2. Guest Apply only as last resort
         register_btn_selectors = [
-            "button[data-automation-id='createAccountButton']",
+            "button[data-automation-id='createAccountLink']",
             "a[data-automation-id='createAccountLink']",
+            "button[data-automation-id='createAccountButton']",
             "div[data-automation-id='signInContent'] button:has-text('Create Account')",
             "div[data-automation-id='signInContent'] a:has-text('Create Account')",
             "button:has-text('Create Account')",
@@ -958,11 +1114,16 @@ def _attempt_register(page: Page, prof: dict, email: str, password: str, ats: st
 
         # Fill registration form fields
 
-        # 1. Email & Confirm Email
-        for sel in ["input[id*='email']", "input[name*='email']", "input[data-automation-id='email']"]:
+        # 1. Email & Confirm Email (skip honeypots like Workday beecatcher)
+        for sel in ["input[data-automation-id='email']", "input[id*='email']", "input[name*='email']"]:
             try:
                 for el in page.query_selector_all(sel):
-                    if el.is_visible() and not el.input_value():
+                    aid = (el.get_attribute("data-automation-id") or "").lower()
+                    name = (el.get_attribute("name") or "").lower()
+                    if "bee" in aid or name == "website":
+                        continue
+                    if el.is_visible() and (el.input_value() or "").strip() != email:
+                        el.fill("")
                         el.fill(email)
             except Exception:
                 pass
@@ -971,23 +1132,26 @@ def _attempt_register(page: Page, prof: dict, email: str, password: str, ats: st
             try:
                 el = page.query_selector(sel)
                 if el and el.is_visible():
+                    el.fill("")
                     el.fill(email)
             except Exception:
                 pass
 
-        # 2. Password & Confirm Password
-        for sel in ["input[type='password']", "input[data-automation-id='password']", "input[id*='password']", "input[name*='password']"]:
+        # 2. Password & Confirm Password (always overwrite stale failed-login values)
+        for sel in ["input[data-automation-id='password']", "input[type='password']", "input[id*='password']", "input[name*='password']"]:
             try:
                 for el in page.query_selector_all(sel):
-                    if el.is_visible() and not el.input_value():
+                    if el.is_visible():
+                        el.fill("")
                         el.fill(password)
             except Exception:
                 pass
 
-        for sel in ["input[id*='verifyPassword']", "input[name*='verifyPassword']", "input[id*='confirmPassword']", "input[name*='confirmPassword']", "input[data-automation-id='verifyPassword']"]:
+        for sel in ["input[data-automation-id='verifyPassword']", "input[id*='verifyPassword']", "input[name*='verifyPassword']", "input[id*='confirmPassword']", "input[name*='confirmPassword']"]:
             try:
                 el = page.query_selector(sel)
                 if el and el.is_visible():
+                    el.fill("")
                     el.fill(password)
             except Exception:
                 pass
@@ -1099,16 +1263,19 @@ def _attempt_register(page: Page, prof: dict, email: str, password: str, ats: st
             try:
                 btn = page.query_selector(sel)
                 if btn and btn.is_visible():
-                    btn.click()
+                    btn.click(force=True)
                     print(f"[auth:register] Submitted registration form via {sel}")
-                    time.sleep(4)
+                    for _ in range(10):
+                        if not _is_create_account_screen(page):
+                            break
+                        time.sleep(0.5)
                     break
             except Exception:
                 pass
 
         # Determine company identifier
         company_name = re.sub(r"https?://([^/]+).*", r"\1", url)
-        page_text = page.inner_text("body").lower()
+        page_text = (page.inner_text("body") or "").lower()
 
         # Check if registration failed because user/account already exists
         EXISTS_KEYWORDS = [
@@ -1119,20 +1286,30 @@ def _attempt_register(page: Page, prof: dict, email: str, password: str, ats: st
         ]
         if any(kw in page_text for kw in EXISTS_KEYWORDS):
             print(f"[auth:register] Account already exists for {email} on {company_name}!")
-            print(f"[auth:register] Saved passwords failed. Alerting user to sign in manually...")
+            print("[auth:register] Saved passwords failed. Alerting user to sign in manually...")
             alert(
                 f"Account Exists - Action Required [{company_name}]",
                 f"Account exists on {company_name} but saved passwords failed. Please sign in or reset password in browser."
             )
             return False
 
-        # Record new credentials into client_secret.json if successfully created
+        # Verify submission did not remain blocked on Create Account due to validation/password error
+        if _is_create_account_screen(page):
+            print(f"[auth:register] Registration form still active on {company_name}. Manual review needed.")
+            alert(
+                f"Registration Validation Needed [{company_name}]",
+                f"Could not submit Create Account cleanly on {company_name}. Please check form requirements in browser."
+            )
+            return False
+
+        # Record new credentials into client_secret.json / candidate_accounts.json if created
         record_new_account(company=company_name, website=url, username=email, password=password)
 
-        # Check if email verification code / OTP is required
-        if any(v in page_text for v in ["verification code", "enter code", "verify your email", "activation link", "otp"]):
+        # Check if email verification code / OTP is required before entering application steps
+        if _needs_verification_challenge(page):
             print("[auth:register] Verification required! Triggering macOS chime and notification...")
             alert("ATS Email/OTP Verification", f"Verification sent for {company_name}. Please enter code or click link.")
+            return False
 
         return True
 
@@ -1529,8 +1706,33 @@ def _fill_common(page: Page):
         except Exception:
             pass
 
-    # Use raw 10-digit phone if country code selector exists on page
-    phone_val = CANDIDATE["raw_phone"] if has_cc else CANDIDATE["phone"]
+    # Use raw 10-digit phone (no country code) if country code selector exists on page
+    if not has_cc:
+        try:
+            cc_inp = page.query_selector(
+                "input[id*='countryPhoneCode' i], input[id*='phoneCode' i], "
+                "div[data-automation-id='countryPhoneCode'], "
+                "button[id*='countryPhoneCode' i], button[id*='phoneCode' i]"
+            )
+            if cc_inp and cc_inp.is_visible():
+                has_cc = True
+        except Exception:
+            pass
+    clean_digits = re.sub(r"\D", "", CANDIDATE.get("raw_phone") or CANDIDATE.get("phone") or "")
+    raw_10 = clean_digits[-10:] if len(clean_digits) >= 10 else clean_digits
+    page_url_lower = (page.url or "").lower()
+    use_raw_phone = has_cc or any(dom in page_url_lower for dom in ["myworkdayjobs.com", "jobseqno=", "careers.mccain.com"])
+    phone_val = raw_10 if use_raw_phone else (CANDIDATE.get("phone") or raw_10)
+
+    # Clear accidental phone numbers left in Workday phoneExtension inputs
+    for ext_el in page.query_selector_all("input[id*='extension' i], input[name*='extension' i]"):
+        try:
+            if ext_el.is_visible():
+                ev = (ext_el.input_value() or "").strip()
+                if ev and ("+" in ev or len(ev) > 5):
+                    ext_el.fill("")
+        except Exception:
+            pass
 
     mapping = {
         "first":    CANDIDATE["first_name"],
@@ -1541,20 +1743,37 @@ def _fill_common(page: Page):
     }
     filled = []
     for keyword, value in mapping.items():
-        for sel in [
+        selectors = (
+            [
+                "input[data-automation-id='phone-number']",
+                "input[id='phoneNumber--phoneNumber']",
+                "input[id*='phoneNumber--phoneNumber']",
+                "input[id*='phoneNumber' i]",
+            ]
+            if keyword == "phone"
+            else []
+        ) + [
             f"input[data-automation-id*='{keyword}' i]",
-            f"input[id*='{keyword}']",
-            f"input[name*='{keyword}']",
-            f"input[placeholder*='{keyword}']",
-        ]:
+            f"input[id*='{keyword}' i]",
+            f"input[name*='{keyword}' i]",
+            f"input[placeholder*='{keyword}' i]",
+        ]
+        for sel in selectors:
             try:
                 el = page.query_selector(sel)
                 if el and el.is_visible():
                     el_id = (el.get_attribute("id") or "").lower()
                     el_name = (el.get_attribute("name") or "").lower()
-                    # Guardrail: never inject identity fields into comment or notes inputs
-                    if any(bad in el_id or bad in el_name for bad in ["comment", "note", "desc", "reason", "feedback"]):
+                    # Guardrail: never inject identity fields into comments, notes, country phone codes, or extensions
+                    if any(bad in el_id or bad in el_name for bad in [
+                        "comment", "note", "desc", "reason", "feedback",
+                        "extension", "countryphonecode", "phonecode",
+                    ]):
                         continue
+                    if keyword == "phone" and (el.input_value() or "").strip() == value:
+                        filled.append(keyword)
+                        break
+                    el.fill("")
                     el.fill(value)
                     filled.append(keyword)
                     break
@@ -1598,6 +1817,71 @@ def _fill_common(page: Page):
     _fill_screening_and_custom_questions(page)
 
 
+def _fill_workday_prompt(page: Page, inp, full_lbl: str) -> bool:
+    """Select an option on Workday searchable prompt inputs (e.g. Source / Country Phone Code)."""
+    def _prompt_has_chip() -> bool:
+        try:
+            return bool(inp.evaluate(
+                "el => Boolean(el.closest(\"[data-automation-id='multiselectInputContainer'], [data-automation-id='promptContainer']\")?.querySelector(\"[data-automation-id='selectedItem']\"))"
+            ))
+        except Exception:
+            return False
+
+    if _prompt_has_chip():
+        return True
+
+    inp_id = (inp.get_attribute("id") or "").lower()
+    preferred_terms: list[str]
+    search_query = ""
+    if "phonecode" in inp_id or ("phone" in full_lbl and "code" in full_lbl):
+        preferred_terms = ["india (+91)", "+91", "india"]
+        search_query = "India"
+    elif "source" in inp_id or "hear" in full_lbl or "source" in full_lbl:
+        preferred_terms = [
+            "career site", "careers site", "company career site",
+            "careers", "corporate website", "company website",
+            "website", "job board", "online", "other",
+        ]
+        search_query = "Career Site"
+    else:
+        return False
+
+    try:
+        inp.fill("")
+        inp.click()
+        if search_query:
+            inp.type(search_query, delay=30)
+            inp.press("Enter")
+        time.sleep(0.6)
+        opt_selector = (
+            "div[data-automation-id='promptLeafNode'], "
+            "div[data-automation-id='promptOption'], "
+            "li[data-automation-id='menuItem'], "
+            "div[role='option']"
+        )
+        for _ in range(3):
+            opts = page.query_selector_all(opt_selector)
+            visible_opts = [o for o in opts if o.is_visible() and (o.inner_text() or "").strip()]
+            if not visible_opts:
+                break
+            chosen = None
+            for term in preferred_terms:
+                chosen = next((o for o in visible_opts if term in (o.inner_text() or "").strip().lower()), None)
+                if chosen:
+                    break
+            chosen = chosen or visible_opts[0]
+            chosen_txt = (chosen.inner_text() or "").strip()
+            chosen.click()
+            time.sleep(0.7)
+            if _prompt_has_chip():
+                print(f"[fill:qa:prompt] Selected '{chosen_txt}' for '{full_lbl[:35]}...'")
+                return True
+        page.keyboard.press("Escape")
+    except Exception:
+        pass
+    return False
+
+
 def _fill_screening_and_custom_questions(page: Page):
     """Autofill screening questions, compensation, notice period, and technical YOE across any ATS portal."""
     try:
@@ -1629,8 +1913,18 @@ def _fill_screening_and_custom_questions(page: Page):
             aria_lbl = (inp.get_attribute("aria-label") or "").lower()
             full_lbl = f"{lbl_text} {inp_ph} {inp_name} {inp_id} {aria_lbl}"
 
-            # Guard comments
-            if any(bad in full_lbl for bad in ["comment", "note", "desc", "reason", "feedback"]):
+            # Guard comments & optional extension fields
+            if any(bad in full_lbl for bad in ["comment", "note", "desc", "reason", "feedback", "extension"]):
+                continue
+
+            # Handle Workday searchable prompt inputs before generic text fill
+            is_prompt_box = (
+                inp_ph == "search"
+                or (inp.get_attribute("data-uxi-widget-type") or "").lower() == "selectinput"
+                or "multiselect" in inp_id
+            )
+            if is_prompt_box:
+                _fill_workday_prompt(page, inp, full_lbl)
                 continue
 
             cur_val = (inp.input_value() or "").strip()
@@ -1646,15 +1940,90 @@ def _fill_screening_and_custom_questions(page: Page):
 
             if cur_val and not is_corrupted:
                 continue
+            if "profileskills" in inp_name or "type the skill" in inp_ph:
+                continue
 
             ans = QASemanticsEngine.match_question(full_lbl, field_type=inp.get_attribute("type") or "text")
+            if ans and "phone" in full_lbl:
+                cur_u = (page.url or "").lower()
+                if any(k in cur_u for k in ["jobseqno=", "myworkdayjobs.com", "careers.mccain.com"]) or "homephone" in full_lbl:
+                    digits = re.sub(r"\D", "", str(ans))
+                    if len(digits) >= 10:
+                        ans = digits[-10:]
             if ans and ans != "N/A":
                 inp.fill(ans)
                 print(f"[fill:qa] Auto-filled '{full_lbl[:35]}...' -> '{ans}'")
         except Exception:
             pass
 
-    # 2. Dropdowns (<select>)
+    # 1b. Textareas (e.g. Workday desired salary / open-ended questions, never comments)
+    for ta in page.query_selector_all("textarea"):
+        try:
+            if not ta.is_visible() or (ta.input_value() or "").strip():
+                continue
+            ta_id = (ta.get_attribute("id") or "").lower()
+            ta_name = (ta.get_attribute("name") or "").lower()
+            lbl_el = page.query_selector(f"label[for='{ta.get_attribute('id')}']") if ta.get_attribute("id") else None
+            lbl_text = (lbl_el.inner_text().strip().lower() if lbl_el else "")
+            if not lbl_text:
+                lbl_text = (ta.evaluate(
+                    "el => (el.closest('[data-automation-id^=\"formField\"]')?.querySelector('label, p')?.innerText || '').trim().toLowerCase()"
+                ) or "")
+            full_lbl = f"{lbl_text} {ta_name} {ta_id}"
+            if any(bad in full_lbl for bad in ["comment", "note", "feedback"]):
+                continue
+            ans = QASemanticsEngine.match_question(full_lbl, field_type="textarea")
+            if ans and ans != "N/A":
+                ta.fill(ans)
+                print(f"[fill:qa:textarea] Auto-filled '{full_lbl[:35]}...' -> '{ans[:40]}'")
+        except Exception:
+            pass
+
+    # 2. Dropdowns (<select>) and Workday custom listbox buttons (<button aria-haspopup='listbox'>)
+    for btn in page.query_selector_all("button[aria-haspopup='listbox']"):
+        try:
+            if not btn.is_visible():
+                continue
+            cur_btn_txt = (btn.inner_text() or "").strip().lower()
+            if cur_btn_txt and cur_btn_txt not in ("select one", "select", "select an option", "please select"):
+                continue
+            btn_id = btn.get_attribute("id") or ""
+            lbl_el = page.query_selector(f"label[for='{btn_id}']") if btn_id else None
+            lbl_text = (lbl_el.inner_text().strip().lower() if lbl_el else "")
+            if not lbl_text:
+                lbl_text = (btn.evaluate(
+                    "el => (el.closest('[data-automation-id^=\"formField\"]')?.querySelector('label, span, p')?.innerText || '').trim().toLowerCase()"
+                ) or "")
+            btn.click()
+            time.sleep(0.35)
+            opt_els = [
+                o for o in page.query_selector_all("ul[role='listbox'] li, div[role='listbox'] [role='option'], div[data-automation-id='promptOption']")
+                if o.is_visible() and (o.inner_text() or "").strip()
+            ]
+            opt_texts = [(o.inner_text() or "").strip() for o in opt_els]
+            valid_opts = [t for t in opt_texts if t.lower() not in ("select one", "please select")]
+            if not valid_opts:
+                page.keyboard.press("Escape")
+                continue
+            ans = QASemanticsEngine.match_question(lbl_text or btn_id, field_type="select", options=valid_opts)
+            chosen_opt = None
+            if ans:
+                chosen_opt = next((o for o in opt_els if (o.inner_text() or "").strip().lower() == ans.lower()), None)
+                if not chosen_opt:
+                    chosen_opt = next((o for o in opt_els if ans.lower() in (o.inner_text() or "").strip().lower()), None)
+            if chosen_opt:
+                chosen_txt = (chosen_opt.inner_text() or "").strip()
+                chosen_opt.click()
+                print(f"[fill:qa:listbox] Selected '{chosen_txt}' for '{lbl_text[:35]}...'")
+                time.sleep(0.25)
+            else:
+                page.keyboard.press("Escape")
+        except Exception:
+            try:
+                page.keyboard.press("Escape")
+            except Exception:
+                pass
+
     for sel in page.query_selector_all("select"):
         try:
             if not sel.is_visible():
@@ -1711,6 +2080,86 @@ def _fill_screening_and_custom_questions(page: Page):
                         r.check(force=True)
                         print(f"[fill:qa:radio] Checked '{lbl_txt}' for '{leg_text[:35]}...'")
                         break
+        except Exception:
+            pass
+
+    # 4. PrimeNG custom controls (<p-select>, <p-autocomplete> skill chips, <p-radiobutton>)
+    _fill_primeng_controls(page)
+
+
+def _fill_primeng_controls(page: Page):
+    """Universal handler for PrimeNG Angular controls used by portals such as Ceipal."""
+    try:
+        from core.qa_semantics_engine import QASemanticsEngine
+    except ImportError:
+        return
+
+    # 4a. <p-select> dropdowns
+    for ps in page.query_selector_all("p-select"):
+        try:
+            if not ps.is_visible():
+                continue
+            cur_txt = (ps.inner_text() or "").strip()
+            if cur_txt and cur_txt.lower() not in ("select", "select an option", "please select"):
+                continue
+            lbl_txt = ps.evaluate("""el => {
+                let wrap = el.closest('.formL-2')?.parentElement || el.parentElement?.parentElement;
+                let lbl = wrap ? (wrap.querySelector('label, p, span')?.innerText || '') : '';
+                return lbl.trim().split('\\n')[0].toLowerCase();
+            }""")
+            combo = ps.query_selector("[role='combobox']") or ps
+            combo.click()
+            time.sleep(0.4)
+            opt_els = page.query_selector_all("[role='listbox'] [role='option'], .p-select-overlay li[role='option']")
+            opt_texts = [(o.inner_text() or "").strip() for o in opt_els if (o.inner_text() or "").strip()]
+            if not opt_texts:
+                page.keyboard.press("Escape")
+                continue
+            ans = QASemanticsEngine.match_question(lbl_txt or "select", field_type="select", options=opt_texts)
+            if ans:
+                clicked = False
+                for o in opt_els:
+                    ot = (o.inner_text() or "").strip()
+                    if ot.lower() == ans.lower() or ans.lower() in ot.lower():
+                        o.click()
+                        clicked = True
+                        print(f"[fill:primeng:select] Selected '{ot}' for '{lbl_txt}'")
+                        time.sleep(0.3)
+                        break
+                if not clicked:
+                    page.keyboard.press("Escape")
+            else:
+                page.keyboard.press("Escape")
+        except Exception:
+            pass
+
+    # 4b. <p-autocomplete> multi-chip skill inputs (e.g., Ceipal profileSkills)
+    skill_inp = page.query_selector("p-autocomplete input[name='profileSkills'], p-autocomplete input[placeholder*='skill' i]")
+    if skill_inp and skill_inp.is_visible():
+        try:
+            existing_chips = page.query_selector_all("p-autocomplete .p-autocomplete-chip-item, p-autocomplete li.p-autocomplete-token")
+            if not existing_chips:
+                skills_csv = QASemanticsEngine.match_question("primary skills", field_type="text")
+                skills = [s.strip() for s in skills_csv.split(",") if s.strip()][:8]
+                for sk in skills:
+                    skill_inp.fill(sk)
+                    time.sleep(0.15)
+                    page.keyboard.press("Enter")
+                    time.sleep(0.15)
+                print(f"[fill:primeng:skills] Added {len(skills)} skill chips.")
+        except Exception:
+            pass
+
+    # 4c. <p-radiobutton> groups (e.g., Ceipal Consent for all jobs)
+    for rb in page.query_selector_all("p-radiobutton input[type='radio']"):
+        try:
+            if rb.is_checked():
+                continue
+            r_wrap_txt = rb.evaluate("""el => (el.closest('div')?.parentElement?.parentElement?.innerText || '').toLowerCase()""")
+            if any(k in r_wrap_txt for k in ["consent for all", "yes", "agree"]):
+                rb.check(force=True)
+                print("[fill:primeng:radio] Checked PrimeNG consent radio.")
+                break
         except Exception:
             pass
 
@@ -1962,13 +2411,55 @@ def _fill_city(page: Page):
             pass
 
 
+def _inspect_file_input(inp, resume_filename: str) -> tuple[str, bool]:
+    """Classify a file input ('photo_or_id', 'cover_letter', 'resume') and detect existing uploads."""
+    try:
+        info = inp.evaluate(
+            """(el, fname) => {
+                const accept = (el.getAttribute('accept') || '').toLowerCase();
+                const id = (el.getAttribute('id') || '').toLowerCase();
+                const name = (el.getAttribute('name') || '').toLowerCase();
+                const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                const lblEl = el.id ? document.querySelector(`label[for="${el.id}"]`) : null;
+                const lbl = (lblEl ? lblEl.innerText : '').toLowerCase();
+                const scope = el.closest('[data-automation-id^="formField"], [data-automation-id="file-upload-drop-zone"], section, fieldset, .attachmentField, form') || el.parentElement;
+                const scopeText = (scope ? scope.innerText : '').toLowerCase();
+                const headerScope = el.closest('[data-automation-id^="formField"], section, fieldset, .attachmentField') || el.parentElement;
+                const headerText = (headerScope ? headerScope.innerText : '').slice(0, 300).toLowerCase();
+                const hasExistingItem = Boolean(
+                    scope && (
+                        scope.querySelector('[data-automation-id="file-upload-item-name"], [data-automation-id="delete-file"], [id$="_attachDownloadLabelLink"]')
+                        || scopeText.includes('successfully uploaded')
+                        || (fname && scopeText.includes(fname.toLowerCase()))
+                    )
+                );
+                return { accept, meta: `${id} ${name} ${aria} ${lbl} ${headerText}`, hasExistingItem };
+            }""",
+            resume_filename,
+        ) or {}
+    except Exception:
+        return "resume", False
+
+    accept = info.get("accept", "")
+    meta = info.get("meta", "")
+    has_existing = bool(info.get("hasExistingItem"))
+    photo_kw = ("photo", "headshot", "portrait", "picture", "avatar", "selfie", "signature", "id card", "aadhaar", "pan card")
+    if any(k in meta for k in photo_kw) or ("image/" in accept and ".pdf" not in accept and "resume" not in meta and "cv" not in meta):
+        return "photo_or_id", has_existing
+    if any(k in meta for k in ("cover letter", "cover_letter", "coverletter")):
+        return "cover_letter", has_existing
+    return "resume", has_existing
+
+
 def _upload_resume(page: Page, slug: str = "") -> bool:
-    """Attempt resume upload on common file-input selectors, with dual cover letter upload and Taleo table sanitization."""
+    """Attempt resume upload on resume/CV file inputs only, skipping Photo/ID fields and existing uploads."""
     resume = str(RESUME_PATH.resolve())
+    resume_name = Path(resume).name
     cover_letter = None
     if slug:
         slug_clean = slug.lower().replace("_", "")
-        # Search both application docs directory and central cover_letters directory
+        slug_tokens = [t for t in slug.lower().split("_") if len(t) > 2]
+        # Search job-specific application docs first, then central cover_letters directory (strict slug/company match)
         search_dirs = [
             DOCS_DIR / "applications" / slug,
             DOCS_DIR / "applications",
@@ -1976,19 +2467,25 @@ def _upload_resume(page: Page, slug: str = "") -> bool:
         ]
         for sdir in search_dirs:
             if sdir.exists():
-                candidates = [
-                    p for p in sdir.glob("*.*")
-                    if (slug_clean in p.name.lower().replace("_", "") or "cover" in p.name.lower())
-                    and p.suffix in (".docx", ".pdf", ".md")
-                ]
+                is_job_dir = (sdir == DOCS_DIR / "applications" / slug)
+                candidates = []
+                for p in sdir.glob("*.*"):
+                    if p.suffix not in (".docx", ".pdf", ".md"):
+                        continue
+                    pname_clean = p.name.lower().replace("_", "").replace("-", "")
+                    stem_lower = p.stem.lower()
+                    matched_company_tokens = (
+                        bool(slug_tokens)
+                        and slug_tokens[0] in stem_lower
+                        and sum(1 for t in slug_tokens if t in stem_lower) >= min(2, len(slug_tokens))
+                    )
+                    if slug_clean in pname_clean or matched_company_tokens or (is_job_dir and "cover" in stem_lower):
+                        candidates.append(p)
                 if candidates:
                     candidates.sort(key=lambda x: (0 if x.suffix == ".docx" else (1 if x.suffix == ".pdf" else 2)))
                     cover_letter = str(candidates[0].resolve())
                     break
-    if not cover_letter:
-        recent_letters = sorted(COVER_LETTERS_DIR.glob("*.docx"), key=os.path.getmtime, reverse=True)
-        if recent_letters:
-            cover_letter = str(recent_letters[0].resolve())
+    # Never attach another company's cover letter via global fallback — only use cover letter matched to slug above.
 
     # 1. Clear any attachment comment inputs to avoid leaking text/email
     for comment_sel in [
@@ -2003,17 +2500,55 @@ def _upload_resume(page: Page, slug: str = "") -> bool:
         except Exception:
             pass
 
-    # 2. Check for dual/multiple file inputs (e.g. CV Upload + Additional Documents / Cover Letter)
+    # 2. Check for dual/multiple file inputs (e.g. CV Upload + Cover Letter), filtering out Photo/ID & existing files
     file_inputs = page.query_selector_all("input[type='file']")
     if len(file_inputs) >= 2:
         try:
-            file_inputs[0].set_input_files(resume)
-            print("[upload] Master Resume uploaded to primary file input #0")
-            time.sleep(1)
-            if cover_letter:
-                file_inputs[1].set_input_files(cover_letter)
-                print(f"[upload] Tailored Cover Letter uploaded to secondary file input #1: {Path(cover_letter).name}")
-            return True
+            did_dual = False
+            resume_handled = False
+            for idx, finp in enumerate(file_inputs):
+                kind, already = _inspect_file_input(finp, resume_name)
+                near_txt = (finp.evaluate("""el => {
+                    let cur = el.parentElement;
+                    for (let i = 0; i < 4 && cur; i++) {
+                        let t = (cur.innerText || '').trim();
+                        if (t.length > 0 && t.length < 300) return t.toLowerCase();
+                        cur = cur.parentElement;
+                    }
+                    return (el.parentElement?.innerText || '').toLowerCase();
+                }""") or "")
+                if any(k in near_txt for k in ["upload files", "additional document", "supporting", "cover letter"]) and "upload resume" not in near_txt:
+                    kind = "cover_letter"
+                if kind == "photo_or_id":
+                    print(f"[upload] Skipping non-document file input #{idx} ({kind}).")
+                    continue
+                if kind == "cover_letter":
+                    if cover_letter:
+                        cl_name = Path(cover_letter).name.lower()
+                        cl_box = (finp.evaluate("el => (el.closest('.form-group, section, div[class*=upload]')?.innerText || '').toLowerCase()") or "")
+                        if cl_name not in cl_box:
+                            finp.set_input_files(cover_letter)
+                            print(f"[upload] Tailored Cover Letter uploaded to file input #{idx}: {Path(cover_letter).name}")
+                            did_dual = True
+                        else:
+                            print(f"[upload] Tailored Cover Letter already attached ({Path(cover_letter).name}); skipping duplicate upload.")
+                            did_dual = True
+                    else:
+                        print(f"[upload] Skipping supplementary file input #{idx} (cover_letter) - no job-specific cover letter to attach.")
+                    continue
+                if kind == "resume":
+                    if already or resume_handled:
+                        print("[upload] Resume already uploaded in drop-zone; skipping duplicate upload.")
+                        resume_handled = True
+                        did_dual = True
+                    else:
+                        finp.set_input_files(resume)
+                        print(f"[upload] Master Resume uploaded to file input #{idx}")
+                        resume_handled = True
+                        did_dual = True
+                        time.sleep(1)
+            if did_dual:
+                return True
         except Exception as e:
             print(f"[upload] Error in dual file upload: {e}")
 
@@ -2058,6 +2593,22 @@ def _upload_resume(page: Page, slug: str = "") -> bool:
         try:
             el = page.query_selector(sel)
             if el:
+                gp_raw = el.evaluate("el => (el.parentElement?.parentElement?.innerText || '').toLowerCase()")
+                gp_txt = gp_raw if isinstance(gp_raw, str) else ""
+                if "awliwidget" in gp_txt or ("upload files" in gp_txt and "upload resume" not in gp_txt):
+                    continue
+                inner_fn = getattr(page, "inner_text", None)
+                body_txt = (inner_fn("body") or "").lower() if callable(inner_fn) else ""
+                if resume_name.lower() in body_txt:
+                    print("[upload] Resume filename already displayed on page; skipping redundant single-input upload.")
+                    return True
+                kind, already = _inspect_file_input(el, resume_name)
+                if kind == "photo_or_id":
+                    print(f"[upload] Skipping non-resume file input ({kind}) via {sel}")
+                    continue
+                if already:
+                    print(f"[upload] Resume already uploaded via {sel}; skipping duplicate upload.")
+                    return True
                 el.set_input_files(resume)
                 print(f"[upload] Resume uploaded via {sel}")
                 uploaded = True
@@ -2995,39 +3546,22 @@ def _fill_successfactors_dynamic_tables(page: Page):
         print(f"[apply:successfactors] Dynamic tables handler notice: {e}")
 
 
-def _apply_successfactors(url: str, slug: str, fields: dict = None, keep_open: bool = True, auto_submit: bool = True):
-    print("[apply:successfactors] SuccessFactors: persistent session -> auto-login/register -> multi-step wizard...")
-    pw, ctx, page = open_persistent_browser()
-    navigate(page, url)
-    time.sleep(3)
+def _run_successfactors_wizard(pw, ctx, page, url: str, slug: str, fields: dict = None, keep_open: bool = True, auto_submit: bool = False):
+    """Execute authentication and multi-step form fill on an active SAP SuccessFactors page."""
+    # Check for email intake form if present
+    email_inp = page.query_selector(".emailGetter input[type='email'], input[name='email']")
+    if email_inp and email_inp.is_visible() and not email_inp.input_value():
+        from core.qa_semantics_engine import load_candidate_context
+        cand = load_candidate_context()
+        cand_email = cand.get("email") or os.environ.get("CANDIDATE_EMAIL", "")
+        if cand_email:
+            email_inp.fill(cand_email)
+            start_btn = page.query_selector(".emailGetter button.start, button:has-text('Start')")
+            if start_btn and start_btn.is_visible():
+                start_btn.click()
+                time.sleep(3)
 
-    # Click Apply if on job listing
-    apply_btn = page.query_selector("button#unifyApplyNowTopButton, a#applyOption--manual, a:has-text('Apply now'), button:has-text('Apply now'), a:has-text('Apply'), button:has-text('Apply'), input[value*='Apply']")
-    if apply_btn:
-        try:
-            apply_btn.click()
-            time.sleep(2)
-            manual_opt = page.query_selector("a#applyOption--manual, a[aria-label='Apply Now'], a:has-text('Apply Now')")
-            if manual_opt and manual_opt.is_visible():
-                manual_opt.click()
-                time.sleep(2)
-            
-            # Check for email intake form
-            email_inp = page.query_selector(".emailGetter input[type='email'], input[name='email']")
-            if email_inp and email_inp.is_visible():
-                from core.qa_semantics_engine import load_candidate_context
-                cand = load_candidate_context()
-                cand_email = cand.get("email") or os.environ.get("CANDIDATE_EMAIL", "")
-                if cand_email:
-                    email_inp.fill(cand_email)
-                    start_btn = page.query_selector(".emailGetter button.start, button:has-text('Start')")
-                    if start_btn:
-                        start_btn.click()
-                        time.sleep(3)
-        except Exception:
-            pass
-
-    auto_authenticate_or_register(page, "successfactors", url)
+    auto_authenticate_or_register(page, "successfactors", page.url or url)
 
     # Multi-step loop
     for step in range(1, 10):
@@ -3042,8 +3576,8 @@ def _apply_successfactors(url: str, slug: str, fields: dict = None, keep_open: b
             "button:has-text('Register'), a:has-text('Register'), #fbclc_createAccountButton"
         )
         if has_reg:
-            print(f"[apply:successfactors] Registration trigger detected on step {step}. Executing account registration...")
-            _attempt_register(page, CANDIDATE, CANDIDATE["email"], CANDIDATE["password"], "successfactors", page.url)
+            print(f"[apply:successfactors] Registration trigger detected on step {step}. Executing auth pipeline...")
+            auto_authenticate_or_register(page, "successfactors", page.url or url)
             time.sleep(3)
 
         # Expand all sections if on SuccessFactors portalcareer single/multi-section page
@@ -3061,11 +3595,17 @@ def _apply_successfactors(url: str, slug: str, fields: dict = None, keep_open: b
         _fill_screening_and_custom_questions(page)
         _fill_successfactors_picklists(page)
         _fill_successfactors_dynamic_tables(page)
+        page.screenshot(path=str(SCRATCH_DIR / f"{slug}_sf_step_{step}.png"))
 
-        body_text = (page.inner_text("body") or "").lower()
         sub_btn = page.query_selector("span[role='button']:has-text('Apply'), [id$='_submitBtn'], span.rcmSaveButton:has-text('Apply'), button:has-text('Submit'), input[value*='Submit' i]")
         if sub_btn and sub_btn.is_visible():
             print("[apply:successfactors] Reached final review/apply page!")
+            app_doc_dir = DOCS_DIR / "applications" / slug
+            app_doc_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                page.screenshot(path=str(app_doc_dir / "pre_submit_form.png"), full_page=True)
+            except Exception:
+                page.screenshot(path=str(app_doc_dir / "pre_submit_form.png"))
             page.screenshot(path=str(SCRATCH_DIR / f"{slug}_review.png"))
             if auto_submit:
                 print("[apply:successfactors] Submitting application...")
@@ -3086,13 +3626,36 @@ def _apply_successfactors(url: str, slug: str, fields: dict = None, keep_open: b
             "button:has-text('Sign In'), button:has-text('Create Account'), button:has-text('Save'), "
             "input[value*='Next' i], input[value*='Continue' i], input[value*='Sign In' i], input[value*='Create Account' i]"
         )
-        if nxt and "submit" not in (nxt.inner_text() or "").lower() and "apply" not in (nxt.inner_text() or "").lower():
+        if nxt and nxt.is_visible() and "submit" not in (nxt.inner_text() or "").lower() and "apply" not in (nxt.inner_text() or "").lower():
             nxt.click()
             time.sleep(3)
         else:
             break
 
+    page.screenshot(path=str(SCRATCH_DIR / f"{slug}_prefill.png"))
     close_browser(pw, ctx, keep_open=keep_open)
+
+
+def _apply_successfactors(url: str, slug: str, fields: dict = None, keep_open: bool = True, auto_submit: bool = False):
+    print("[apply:successfactors] SuccessFactors: persistent session -> auto-login/register -> multi-step wizard...")
+    pw, ctx, page = open_persistent_browser()
+    navigate(page, url)
+    time.sleep(3)
+
+    # Click Apply if on job listing
+    apply_btn = page.query_selector("button#unifyApplyNowTopButton, a#applyOption--manual, a:has-text('Apply now'), button:has-text('Apply now'), a:has-text('Apply'), button:has-text('Apply'), input[value*='Apply']")
+    if apply_btn:
+        try:
+            apply_btn.click()
+            time.sleep(2)
+            manual_opt = page.query_selector("a#applyOption--manual, a[aria-label='Apply Now'], a:has-text('Apply Now')")
+            if manual_opt and manual_opt.is_visible():
+                manual_opt.click()
+                time.sleep(2)
+        except Exception:
+            pass
+
+    _run_successfactors_wizard(pw, ctx, page, url, slug, fields=fields, keep_open=keep_open, auto_submit=auto_submit)
 
 
 def _apply_generic(url: str, slug: str, fields: dict = None, keep_open: bool = True, auto_submit: bool = False):
@@ -3102,29 +3665,87 @@ def _apply_generic(url: str, slug: str, fields: dict = None, keep_open: bool = T
     navigate(page, url)
     time.sleep(3)
 
-    # Check if an Apply button exists on the job description page and click it
-    apply_btn = page.query_selector("a:has-text('Apply Now'), button:has-text('Apply Now'), a:has-text('Apply'), button:has-text('Apply'), input[value*='Apply' i]")
-    if apply_btn:
+    def _dismiss_cookie_banners(p: Page):
+        for cookie_sel in [
+            "button[data-ph-at-id='cookie-accept-btn']",
+            "button[data-ph-at-id='cookie-close-link']:has-text('Allow')",
+            "[class*='cookie' i] button:has-text('Allow')",
+            "#onetrust-accept-btn-handler",
+            "button:has-text('Accept All')",
+            "button:has-text('Accept Cookies')",
+        ]:
+            try:
+                cb = p.query_selector(cookie_sel)
+                if cb and cb.is_visible():
+                    cb.click()
+                    time.sleep(0.5)
+                    break
+            except Exception:
+                pass
+
+    # Accept cookie banners on Phenom / corporate career sites before interacting
+    _dismiss_cookie_banners(page)
+
+    try:
+        from core.qa_semantics_engine import QASemanticsEngine
+        page_text = page.inner_text("body") or ""
+        upper_sal = QASemanticsEngine.extract_upper_salary_from_text(page_text)
+        if upper_sal:
+            os.environ["CAREERPILOT_JOB_UPPER_SALARY_INR"] = upper_sal[0]
+            os.environ["CAREERPILOT_JOB_UPPER_SALARY_LPA"] = upper_sal[1]
+            print(f"[apply:generic] Detected JD budget upper bound -> {upper_sal[0]} INR ({upper_sal[1]} LPA)")
+    except Exception:
+        pass
+
+    # Check if an Apply button exists on the job description page and click it (supports new-tab / ATS redirects)
+    apply_btn = page.query_selector(
+        "a[data-ph-at-id='apply-link'], button[data-ph-at-id='apply-btn'], "
+        "a:has-text('Apply Now'), button:has-text('Apply Now'), "
+        "a:has-text('Apply'), button:has-text('Apply'), input[value*='Apply' i]"
+    )
+    if apply_btn and apply_btn.is_visible():
+        prev_pages = len(ctx.pages)
         try:
             print("[apply:generic] Clicking Apply button...")
             apply_btn.click()
-            time.sleep(4)
+            for _ in range(12):
+                if len(ctx.pages) > prev_pages or page.url != url:
+                    break
+                time.sleep(0.5)
+            if len(ctx.pages) > prev_pages:
+                page = ctx.pages[-1]
+                page.wait_for_load_state("domcontentloaded", timeout=10000)
+                print(f"[apply:generic] Switched to new tab -> {page.url}")
         except Exception as e:
             print(f"[apply:generic] Apply button click notice: {e}")
 
-    auto_authenticate_or_register(page, ats, url)
+    redirected_ats = detect_ats(page.url)
+    if redirected_ats == "successfactors":
+        print(f"[apply:generic] Redirected to SAP SuccessFactors -> {page.url}")
+        _run_successfactors_wizard(pw, ctx, page, page.url, slug, fields=fields, keep_open=keep_open, auto_submit=auto_submit)
+        return
+
+    auto_authenticate_or_register(page, redirected_ats or ats, page.url or url)
+    _dismiss_cookie_banners(page)
 
     # Form loop / multi-step fill
     for step in range(1, 10):
         time.sleep(2)
+        _dismiss_cookie_banners(page)
         _fill_common(page)
         _upload_resume(page, slug)
         _handle_relevant_files(page)
         page.screenshot(path=str(SCRATCH_DIR / f"{slug}_step_{step}.png"))
 
         body_text = (page.inner_text("body") or "").lower()
-        if any(kw in body_text for kw in ["review and submit", "pre-submission", "summary", "review your application"]):
-            print(f"[apply:generic] Reached final review page on step {step}!")
+        submit_btn = page.query_selector(
+            "button[aria-label='SUBMIT'], button:text-is('SUBMIT'), "
+            "button:has-text('Submit Application'), input[type='submit'][value*='Submit' i]"
+        )
+        if any(kw in body_text for kw in ["review and submit", "pre-submission", "summary", "review your application"]) or (
+            submit_btn and submit_btn.is_visible()
+        ):
+            print(f"[apply:generic] Reached final review/submit page on step {step}!")
             break
 
         # Check if there is a next/continue button
@@ -3137,6 +3758,26 @@ def _apply_generic(url: str, slug: str, fields: dict = None, keep_open: bool = T
                 break
         else:
             break
+
+    app_doc_dir = DOCS_DIR / "applications" / slug
+    app_doc_dir.mkdir(parents=True, exist_ok=True)
+    screenshot_path = app_doc_dir / "pre_submit_form.png"
+    audit_md_path = app_doc_dir / "pre_submit_audit.md"
+    try:
+        page.screenshot(path=str(screenshot_path), full_page=True)
+    except Exception:
+        try:
+            page.screenshot(path=str(screenshot_path))
+        except Exception:
+            pass
+    audit_md_path.write_text(
+        f"# Pre-Submit Application Audit ({slug})\n\n"
+        f"- **URL:** {page.url}\n"
+        f"- **ATS:** {redirected_ats or ats}\n"
+        f"- **Auto-Submit:** False (Paused for final user verification)\n"
+        f"- **Screenshot:** `documents/applications/{slug}/pre_submit_form.png`\n",
+        encoding="utf-8",
+    )
 
     page.screenshot(path=str(SCRATCH_DIR / f"{slug}_prefill.png"))
     _alert_before_submit(slug)
@@ -3230,9 +3871,27 @@ def _apply_workday(url: str, slug: str, fields: dict = None, keep_open: bool = T
         except Exception:
             pass
 
+    # Wait briefly for Workday SPA to render form, Autofill with Resume, or Apply / Continue Application
+    entry_sel = (
+        "div[data-automation-id='file-upload-drop-zone'], button[data-automation-id='pageFooterNextButton'], "
+        "button[data-automation-id='bottom-navigation-next-button'], "
+        "a[data-automation-id='autofillWithResume'], button:has-text('Autofill with Resume'), a:has-text('Autofill with Resume'), "
+        "a[data-automation-id='adventureButton'], a:has-text('Continue Application'), button:has-text('Continue Application'), "
+        "a:has-text('Apply'), button:has-text('Apply')"
+    )
+    for _ in range(12):
+        try:
+            if page.query_selector(entry_sel):
+                break
+        except Exception:
+            pass
+        time.sleep(0.5)
+
     # 1. Check if user is already authenticated or already on application form
     user_menu = page.query_selector("button[data-automation-id='utilityMenuButton']")
-    on_form = bool(page.query_selector("div[data-automation-id='file-upload-drop-zone'], button[data-automation-id='bottom-navigation-next-button']"))
+    on_form = bool(page.query_selector(
+        "div[data-automation-id='file-upload-drop-zone'], button[data-automation-id='pageFooterNextButton'], button[data-automation-id='bottom-navigation-next-button']"
+    ))
 
     if not on_form:
         # Check if 'Autofill with Resume' is already visible (e.g. direct /apply URL)
@@ -3245,11 +3904,16 @@ def _apply_workday(url: str, slug: str, fields: dict = None, keep_open: bool = T
             except Exception as e:
                 print(f"[apply:workday] Autofill button notice: {e}")
         else:
-            # Check for main 'Apply' button on job description page
-            apply_btn = page.query_selector("a[data-automation-id='adventureButton'], a:has-text('Apply'), button:has-text('Apply'), a:has-text('Apply Now'), button:has-text('Apply Now')")
+            # Check for main 'Apply' or 'Continue Application' button on job description page
+            apply_btn = page.query_selector(
+                "a[data-automation-id='adventureButton'], "
+                "a:has-text('Continue Application'), button:has-text('Continue Application'), "
+                "a:has-text('Apply'), button:has-text('Apply'), "
+                "a:has-text('Apply Now'), button:has-text('Apply Now')"
+            )
             if apply_btn and apply_btn.is_visible():
                 try:
-                    print("[apply:workday] Clicking Apply button...")
+                    print("[apply:workday] Clicking Apply / Continue Application button...")
                     apply_btn.click()
                     time.sleep(3)
                     # Check for Autofill with Resume after clicking Apply
@@ -3259,6 +3923,25 @@ def _apply_workday(url: str, slug: str, fields: dict = None, keep_open: bool = T
                         time.sleep(3)
                 except Exception as e:
                     print(f"[apply:workday] Apply click notice: {e}")
+
+        # Wait briefly for Workday SPA gateway / auth / resume-upload DOM to settle
+        workday_ready_sel = (
+            "div[data-automation-id='signInContent'], div[role='dialog'], "
+            "input[type='password'], input[data-automation-id='verifyPassword'], "
+            "button[data-automation-id='createAccountSubmitButton'], button[data-automation-id='signInSubmitButton'], "
+            "button[data-automation-id='signInLink'], a[data-automation-id='signInLink'], "
+            "button[data-automation-id='createAccountLink'], a[data-automation-id='createAccountLink'], "
+            "button[data-automation-id='SignInWithEmailButton'], button:has-text('Sign in with email'), "
+            "div[data-automation-id='createAccountPage'], div[data-automation-id='file-upload-drop-zone'], "
+            "button[data-automation-id='bottom-navigation-next-button'], a[data-automation-id='applyManually']"
+        )
+        for _ in range(12):
+            try:
+                if page.query_selector(workday_ready_sel):
+                    break
+            except Exception:
+                pass
+            time.sleep(0.5)
 
         # Check for cookies on gateway
         acc_gateway = page.query_selector("button[data-automation-id='legalNoticeAcceptButton'], button:has-text('Accept Cookies')")
@@ -3280,7 +3963,7 @@ def _apply_workday(url: str, slug: str, fields: dict = None, keep_open: bool = T
                 pass
 
         # Check for Apply Manually if still not in gateway
-        if not page.query_selector("div[data-automation-id='signInContent'], input[type='password'], input[data-automation-id='email'], div[data-automation-id='file-upload-drop-zone']"):
+        if not page.query_selector("div[data-automation-id='signInContent'], input[type='password'], input[data-automation-id='verifyPassword'], input[data-automation-id='email'], div[data-automation-id='file-upload-drop-zone']"):
             manual_btn = page.query_selector("a[data-automation-id='applyManually'], button:has-text('Apply Manually'), a:has-text('Apply Manually')")
             if manual_btn and manual_btn.is_visible():
                 try:
@@ -3291,12 +3974,20 @@ def _apply_workday(url: str, slug: str, fields: dict = None, keep_open: bool = T
                     pass
 
         # 2. Authenticate or Register via multi-tier protocol
-        if page.query_selector("div[data-automation-id='signInContent'], div[role='dialog'], input[type='password'], input[data-automation-id='email'], button[data-automation-id='SignInWithEmailButton'], button:has-text('Sign in with email'), div[data-automation-id='createAccountPage']"):
+        if page.query_selector(
+            "div[data-automation-id='signInContent'], div[role='dialog'], input[type='password'], "
+            "input[data-automation-id='verifyPassword'], button[data-automation-id='createAccountSubmitButton'], "
+            "button[data-automation-id='signInSubmitButton'], button[data-automation-id='signInLink'], "
+            "a[data-automation-id='signInLink'], button[data-automation-id='createAccountLink'], "
+            "a[data-automation-id='createAccountLink'], input[data-automation-id='email'], "
+            "button[data-automation-id='SignInWithEmailButton'], button:has-text('Sign in with email'), "
+            "div[data-automation-id='createAccountPage']"
+        ):
             print("[apply:workday] Sign-in / registration screen detected. Executing authentication pipeline...")
             auth_ok = auto_authenticate_or_register(page, "workday", url)
             if not auth_ok:
                 print("[apply:workday] Authentication requires user attention. Leaving browser open and interactive.")
-                alert("Sign In Needed", "Please enter your password or sign in manually to Workday.")
+                alert("Sign In Needed", "Please complete Workday sign-in / verification manually in browser.")
                 close_browser(pw, ctx, keep_open=True)
                 return
             time.sleep(4)
@@ -3312,25 +4003,64 @@ def _apply_workday(url: str, slug: str, fields: dict = None, keep_open: bool = T
 
 
     # 4. Multi-step form completion loop
+    reached_review = False
     for step in range(1, 10):
         time.sleep(2)
+        if _is_create_account_screen(page) or page.query_selector("button[data-automation-id='signInSubmitButton']"):
+            print(f"[apply:workday] Auth screen encountered on step {step}; running authentication pipeline...")
+            if not auto_authenticate_or_register(page, "workday", url):
+                alert("Sign In / Verification Needed", "Please complete Workday sign-in / verification manually in browser.")
+                close_browser(pw, ctx, keep_open=True)
+                return
+            time.sleep(3)
         _fill_common(page)
         _upload_resume(page, slug)
         _handle_relevant_files(page)
         page.screenshot(path=str(SCRATCH_DIR / f"{slug}_workday_step_{step}.png"))
 
         body_text = (page.inner_text("body") or "").lower()
-        if any(kw in body_text for kw in ["review your information", "review and submit", "pre-submission review", "summary of your application"]):
+        review_heading = page.query_selector("div[data-automation-id='reviewPage'], h2:has-text('Review')")
+        if (
+            (review_heading and review_heading.is_visible())
+            or any(kw in body_text for kw in ["review your information", "review and submit", "pre-submission review", "summary of your application"])
+        ):
             print(f"[apply:workday] Reached final review page on step {step}!")
+            reached_review = True
             break
 
-        # Check for Workday Next / Save and Continue button
-        nxt = page.query_selector("button[data-automation-id='bottom-navigation-next-button'], button:has-text('Save and Continue'), button:has-text('Next'), input[value*='Save and Continue' i], input[value*='Next' i]")
-        if nxt and "submit" not in (nxt.inner_text() or "").lower():
+        # Check for Workday Next / Continue / Save and Continue button (never click Submit)
+        nxt = page.query_selector(
+            "button[data-automation-id='pageFooterNextButton'], "
+            "button[data-automation-id='bottom-navigation-next-button'], "
+            "button:has-text('Save and Continue'), button:has-text('Continue'), "
+            "button:has-text('Next'), input[value*='Save and Continue' i], input[value*='Next' i]"
+        )
+        if nxt and nxt.is_visible():
+            nxt_label = (nxt.inner_text() or nxt.get_attribute("value") or "").strip().lower()
+            if "submit" in nxt_label:
+                print(f"[apply:workday] Reached final Submit review step on step {step}; halting auto-submit.")
+                reached_review = True
+                break
             try:
-                print(f"[apply:workday] Step {step} complete. Navigating to next step...")
+                print(f"[apply:workday] Step {step} complete. Navigating via '{nxt_label or 'Next'}'...")
                 nxt.click()
                 time.sleep(4)
+                errs = []
+                for err_el in page.query_selector_all("[data-automation-id='errorMessage'], div[data-automation-id='errorBanner']"):
+                    try:
+                        if err_el.is_visible():
+                            t = (err_el.inner_text() or "").strip()
+                            if t and t not in errs:
+                                errs.append(t)
+                    except Exception:
+                        pass
+                if errs:
+                    print(f"[apply:workday:errors] Detected {len(errs)} validation error(s) on step {step}: {errs[:3]}")
+                    _fill_common(page)
+                    nxt2 = page.query_selector("button[data-automation-id='pageFooterNextButton'], button[data-automation-id='bottom-navigation-next-button'], button:has-text('Save and Continue')")
+                    if nxt2 and nxt2.is_visible() and "submit" not in (nxt2.inner_text() or "").lower():
+                        nxt2.click()
+                        time.sleep(3.5)
             except Exception as e:
                 print(f"[apply:workday] Next step click notice: {e}")
                 break
@@ -3349,15 +4079,20 @@ def _apply_workday(url: str, slug: str, fields: dict = None, keep_open: bool = T
     print(f"[apply:workday] Saved pre-submit screenshot to {screenshot_path}")
 
     from datetime import datetime
+    resolved_title = (page.title() or slug.replace("_", " ").title()).strip()
+    resolved_host = re.sub(r"^https?://", "", url).split("/")[0].lower()
+    audit_status = (
+        "Review Ready (Form Autofilled & Handoff Active)"
+        if reached_review
+        else f"Paused In-Progress (Reached Step {step}; Review Required Fields in Open Browser)"
+    )
     audit_md_path = app_doc_dir / "pre_submit_audit.md"
     audit_content = f"""# Pre-Submission Application Audit: {slug.replace('_', ' ').title()}
 
-**Target Portal:** Workday (`myworkdayjobs.com`)  
+**Target Portal:** Workday (`{resolved_host}`)  
 **Application URL:** {url}  
-**Role Title:** Associate, Data Engineer Workplace Data & Insights  
-**Company:** BlackRock  
-**Location:** Gurugram, India (Hybrid)  
-**Status:** Review Ready (Form Autofilled & Handoff Active)  
+**Role Title:** {resolved_title}  
+**Status:** {audit_status}  
 **Audit Timestamp:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  
 
 ---

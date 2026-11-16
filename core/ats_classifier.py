@@ -33,6 +33,7 @@ ATS_VENDORS = [
     ("oraclecloud", lambda h: bool(re.search(r"(^|\.)oraclecloud(?:\d+)?\.com$", h))),
     ("rippling", lambda h: _host_is(h, "ats.rippling.com") or _host_is(h, "rippling.com")),
     ("pinpoint", lambda h: _host_is(h, "pinpointhq.com")),
+    ("ceipal", lambda h: _host_is(h, "ceipal.com")),
     ("linkedin", lambda h: _host_is(h, "linkedin.com")),
 ]
 

@@ -329,24 +329,17 @@ def answer_custom_question(question: str, company: str = "", role: str = "") -> 
 
 
 def generate_tailored_cover_letter(company: str, role: str, jd: str, research: str = "") -> str:
-    """Generates an elite tailored executive cover letter using local grounded RAG."""
+    """Return grounded local RAG context so the active Gemini model writes & humanizes cover letters exclusively."""
     memories = query_semantic_memory(f"{role} {jd[:1000]}", top_k=4, min_similarity=0.40)
     context_str = "\n\n".join([f"[{m['title']}]\n{m['content']}" for m in memories])
     if research:
         context_str += f"\n\n[Target Company Intelligence]\n{research}"
 
     cand_name = os.getenv("CANDIDATE_NAME", "the candidate")
-    prompt = (
-        f"Target Company: {company}\nTarget Role: {role}\nJob Description Summary: {jd[:800]}\n\n"
-        f"Generate a tailored, humanized executive cover letter for {cand_name}. "
-        "Structure:\n"
-        f"- Opening: Direct, confident hook aligning {cand_name}'s verified background with the team's mission.\n"
-        "- Body 1: Concrete technical impact from verified professional experience (ETL pipelines, data governance, cloud architecture).\n"
-        "- Body 2: Practical systems delivery and business outcomes (metrics, automation, dispute/cost recovery).\n"
-        "- Closing: Forward-looking discussion hook, immediate availability, and sign-off.\n\n"
-        "Style Constraints: High burstiness (sentence length variance), ZERO em dashes, ZERO corporate clichés (spearheaded, leverage, delve, synergy)."
+    return (
+        f"[Gemini-Exclusive Cover Letter Grounded Context for {cand_name} | {company} - {role}]\n"
+        f"{context_str}"
     )
-    return generate_local_response(prompt, context=context_str, max_tokens=600)
 
 
 if __name__ == "__main__":

@@ -167,6 +167,13 @@ def audit_structural_integrity(text: str) -> List[str]:
                     f"Truncated Profile URL: Found '{found_handle}', expected complete handle '{expected_handle}'"
                 )
 
+    # 5. Forbidden cover letter notice/location closing boilerplate
+    #    (skip notice check on structured HR recruiter emails that explicitly contain 'notice period:')
+    if "notice period:" not in text.lower() and re.search(r"\(\s*0\s*days?\s+notice\s*\)|\b0\s*days?\s+notice\b", text, re.IGNORECASE):
+        violations.append("Closing Constraint: Contains forbidden notice phrasing ('(0 days notice)' / '0 days notice') in cover letter")
+    if re.search(r"\binterviews?\s+in\s+[A-Z][A-Za-z]+\b", text):
+        violations.append("Closing Constraint: Contains location-qualified interview phrasing ('interviews in <City>'); use plain 'interview' instead")
+
     return violations
 
 
@@ -181,47 +188,15 @@ def audit_profile_integrity(text: str) -> List[str]:
 
 def proofread_with_openrouter(text: str, role_title: str = "", company: str = "") -> Dict[str, Any]:
     """
-    Tier 2: LLM Proofreading pass via OpenRouter Zero-Cost Free Tier (on-demand only).
-    Audits grammar, restores missing quantified metrics, and validates flow.
+    Tier 2 Proofreader Gate: Non-Gemini LLM calls are disabled for cover letter
+    rewriting/humanizing per the Gemini-Exclusive Cover Letter directive.
     """
-    try:
-        from intelligence.llm_clients.openrouter import ask, is_on_demand_enabled
-    except ImportError:
-        return {"success": False, "proofread_text": text, "error": "OpenRouter client unavailable"}
-
-    if not is_on_demand_enabled():
-        return {"success": False, "proofread_text": text, "error": "OpenRouter skipped (On-Demand Directive disabled)"}
-
-    prompt = f"""
-Proofread and audit the following cover letter for the role '{role_title}' at '{company}'.
-
-INSTRUCTIONS:
-1. Fix any broken metrics (e.g. 'by %' -> check if 40% or appropriate, 'Managing +' -> check if '15+' or appropriate).
-2. Fix any dangling punctuation or unpopulated fields.
-3. Preserve all specific technologies, project names, and facts.
-4. Strictly maintain zero hyphens ('-') and zero em dashes ('—').
-5. Output ONLY the polished cover letter text without preamble or reasoning.
-
-TEXT:
-{text}
-"""
-    try:
-        proofread = ask(
-            prompt=prompt,
-            system="You are an expert editorial proofreader and career communications specialist. Output only the final proofread text directly.",
-            model="cohere/north-mini-code:free",
-            task_tier="draft",
-            temperature=0.3,
-            max_tokens=3000,
-            extract_letter=True,
-        )
-        # Verify result is non-empty
-        if proofread and len(proofread.strip()) > 100:
-            return {"success": True, "proofread_text": proofread.strip(), "model": "cohere/north-mini-code:free"}
-    except Exception as e:
-        print(f"[proofreader:warning] OpenRouter proofread failed: {e}")
-
-    return {"success": False, "proofread_text": text, "error": "LLM call failed or empty response"}
+    _ = (role_title, company)
+    return {
+        "success": False,
+        "proofread_text": text,
+        "error": "Non-Gemini LLM proofreading disabled: exclusively use Gemini for cover letter writing and humanizing.",
+    }
 
 
 def lint_and_format(text: str, proofread_llm: bool = False, role_title: str = "", company: str = "") -> Dict[str, Any]:

@@ -203,6 +203,30 @@ class TestQASemanticsEngine(unittest.TestCase):
         self.assertEqual(QASemanticsEngine.match_question("Where do you reside?", field_type="select", options=["Delhi NCR", "Mumbai", "Hyderabad"]), "Delhi NCR")
         self.assertEqual(QASemanticsEngine.match_question("Where do you reside?", field_type="select", options=["India", "USA", "UK"]), "India")
 
+    def test_ceipal_primary_skills_and_upper_salary(self):
+        import os
+        from unittest.mock import patch
+        from core.ats_classifier import classify_ats_vendor
+
+        self.assertEqual(classify_ats_vendor("https://candidateportal.ceipal.com/job-details/abc"), "ceipal")
+
+        skills_ans = QASemanticsEngine.match_question(
+            " type the skill and hit enter to add profileskills",
+            field_type="text",
+        )
+        self.assertIn("Python", skills_ans)
+        self.assertNotIn("4.8 years of experience", skills_ans)
+
+        upper = QASemanticsEngine.extract_upper_salary_from_text(
+            "Approved Budget Range\n₹ 1200000 - 1800000 / Yearly"
+        )
+        self.assertEqual(upper, ("1800000", "18"))
+        with patch.dict(os.environ, {"CAREERPILOT_JOB_UPPER_SALARY_INR": upper[0], "CAREERPILOT_JOB_UPPER_SALARY_LPA": upper[1]}):
+            self.assertEqual(QASemanticsEngine.match_question("Expected Pay", field_type="text"), "1800000")
+
+        exp_ans = QASemanticsEngine.match_question("Experience", field_type="select", options=["0", "4", "5", "14"])
+        self.assertIn(exp_ans, ["4", "5"])
+
 
 if __name__ == "__main__":
     unittest.main()
