@@ -1,41 +1,42 @@
 # AI Job Search: Session Handoff Document
-**Last Updated:** 2026-11-11 11:32:00 IST  
-**Active Git Branch / Commit:** `master` @ `origin/master` (Universal Automation Framework v1.2.0)  
-**Repository Visibility:** Public ([https://github.com/ankitsingh99/ai-job-search](https://github.com/ankitsingh99/ai-job-search))  
+**Last Updated:** 2026-11-20 14:35:00 IST  
+**Active Git Branch / Commit:** `master` (Universal Automation Framework v1.2.0)  
+**Repository Visibility:** Public (https://github.com/ankitsingh99/ai-job-search)  
 **Model Context Status:** Optimal (Clean Context Handoff - Ready for New Session)  
 
 ---
 
 ## 1. Executive Summary & Current Accomplishments
 
-### 0. Token-Lean Routing, Outreach Engine & Cost Hardening (2026-11-11)
-- **Tiered Free Model Routing & On-Demand Gate:** Updated `intelligence/llm_clients/openrouter.py` with `CHORE_FREE_MODELS` vs `HEAVY_FREE_MODELS` routing (`--tier chore|heavy`), local Ollama offline fallback (`ask_local_ollama_if_online`), explicit `OPENROUTER_ON_DEMAND_ENABLED` (`--allow-openrouter`) gate, and extracted `extract_cover_letter_text()` out of generic `ask()`.
-- **Billable Endpoint Hardening:** Disabled `api.deepseek.com` fallback in `intelligence/llm_clients/deepseek.py`, replaced raw `curl` in `tools/check_career_sites.py` with deterministic domain matching + gated `:free` client, and wired `--allow-openrouter` across `automation/browser.py`, `tools/linkedin_easy_apply_runner.py`, `tools/dl_humanizer_prefilter.py`, and `parsers/linter.py`.
-- **Local Job Filtering & QA Deduplication:** Wired `score_job_locally` and `OnDeviceParser.evaluate_seniority_and_relevance` into `tools/research_jobs.py` (removing unreachable blocks), and unified `ask_openrouter_free` into `core/qa_semantics_engine.py`.
-- **JD-Matched Outreach Engine & Greenhouse Fixes:** Added reusable `tools/contact_pitch.py`, `.agents/skills/linkedin-and-email-outreach/`, `tests/test_contact_pitch.py`, `gh_jid` / iframe handling in `core/ats_classifier.py` and `automation/browser.py`, and direct CSV append sync in `core/tracker.py`.
+### 0. Cost-Intelligent Model Architecture & Adaptive Task Promotion (2026-11-20)
+- **Token-Lean Two-Tier Routing (`core/model_router.py`):**
+  - Evolved model philosophy: use cheaper/free models (Local Ollama, fast OpenRouter free tier) for low-reasoning chore tasks (regex extraction, text trimming, deduplication, simple screening).
+  - Reserve high-reasoning **Gemini** for complex tasks (nuanced cover letter drafting, executive outreach pitches, complex ATS questionnaires, debugging).
+- **FreeLLMAPI Best Patterns Integration:**
+  - **Tool-Call / JSON Output Rescue:** Intercepts markdown fences and conversational chatter, repairing malformed text into valid JSON schemas.
+  - **429 / 5xx Sliding-Window Cooldown Ledger:** Automatically cools down throttled endpoints (60s) and fails over seamlessly without crashing.
+  - **Real-Time Token Conservation:** Tracks tokens saved by offloading chore tasks to local/free models.
+- **User Correction & Mistake Ledger (`core/user_corrections_engine.py`):**
+  - Persistent JSON ledger in `user_inputs/user_corrections_log.json` tracking where the user has halted, corrected, or guided the agent.
+  - **Adaptive Escalation:** When user corrections or mistakes in a task category rise (critical $\ge 1$ or recurrence $\ge 2$), the router dynamically escalates and promotes that entire task category to Gemini.
+  - Active Promoted Tasks: `phone_formatting`, `notice_period_formatting`, `compensation_input`, `experience_duration`, `company_outreach_emphasis`, and `workday_auth_loop`.
+- **Real-Time Analytics CLI (`tools/model_analytics.py`):**
+  - Inspect live routing metrics, model usage, token conservation, active cooldowns, and promoted categories via `python tools/model_analytics.py --status`.
 
-### 1. Integration of Best-of-Breed LinkedIn Open-Source Capabilities
-Integrated verified patterns from `nicolomantini/LinkedIn-Easy-Apply-Bot` and `GodsScion/Auto_job_applier_linkedIn` directly into universal framework modules (`tools/linkedin_easy_apply_runner.py` and `core/qa_semantics_engine.py`):
-1. **Seniority Experience Ceiling Guard:** Added `extract_min_yoe_requirement()` and CLI option `--max-yoe-ceiling 8` to automatically skip senior postings (e.g. 10+ YOE) before applying, preventing disqualification.
-2. **Pre-Click Company & Title Blacklisting:** Added active company and title blacklist filters (`--company-blacklist`, `--title-blacklist`) with automatic skipping of excluded titles (Java, DevOps, Intern, Sales).
-3. **LinkedIn Experience Level URL Parameters:** Integrated native parameter `&f_E=3,4` (Associate, Mid-Senior) to target relevant seniority tiers.
-4. **Unit-Aware CTC & Notice Period Normalization:**
-   - "Per month" / "monthly": Expected CTC returns `233333` (`2800000 / 12`), Current CTC returns `150000` (`1800000 / 12`).
-   - "In lakhs" / "lpa": Expected returns `28`, Current returns `18`.
-   - Notice period in months, weeks, or days returns strictly `0` (immediate joiner).
-5. **Automatic "Follow Company" Opt-Out:** On Review and Submit screens, automatically unchecks `input[type='checkbox'][id*='follow-company']` to protect candidate feed.
-6. **Two-Pass Deadlock Detection:** Detects identical unresolved signatures between step $N$ and $N+1$, preventing timeout loops.
-7. **Structured Failed Application Logging:** Appends skipped or blocked applications to `user_inputs/failed_applications.csv` for transparent auditing.
+### 1. LinkedIn Easy Apply & Outbound Outreach Assets (2026-11-19)
+1. **Digits-Only Phone Input Normalization:**
+   - Fixed LinkedIn Easy Apply modal getting stuck on formatted phone strings (`+91-XXXXX`).
+   - Wired `CANDIDATE_RAW_PHONE` (digits only) into `core/qa_semantics_engine.py` and `tools/linkedin_easy_apply_runner.py` to auto-clear and refill raw 10 digits whenever digits-only validation is required.
+2. **Outbound Pitches Drafted & Verified:**
+   - **Amgen (Senior Associate, IC Contest Reporting, Hyderabad):** Outreach DM to Utkarsh Verma (Manager at Amgen | ex ZS), heavily emphasizing 3+ years at ZS Associates in data management, ingestion, and QC feeding quota and IC inputs ([documents/Amgen_Utkarsh_Verma_IC_Contest_Reporting_Outreach.md](file:///Users/ashish/git/ai-job-search/documents/Amgen_Utkarsh_Verma_IC_Contest_Reporting_Outreach.md)).
+   - **Crescendo Group (Data Solutions Analyst, Gurugram):** Outbound email to Pooja Prasad highlighting ZS Associates consulting, Snowflake curation, 15+ Airflow DAGs, alongside Rush by Kira tracking and TresVista financial modeling ([documents/Crescendo_Data_Solutions_Analyst_Gurugram_Outreach.md](file:///Users/ashish/git/ai-job-search/documents/Crescendo_Data_Solutions_Analyst_Gurugram_Outreach.md)).
+   - **Genpact (Business Systems Analyst / Data Analyst):** Outbound email to Pinki Chhetri ([documents/Genpact_Business_Systems_Analyst_Outreach.md](file:///Users/ashish/git/ai-job-search/documents/Genpact_Business_Systems_Analyst_Outreach.md)).
+   - **Apidel Technologies (Data Engineer - Pharma Domain):** Outbound email to Piyusha R ([documents/Apidel_Technologies_Data_Engineer_Pharma_Outreach.md](file:///Users/ashish/git/ai-job-search/documents/Apidel_Technologies_Data_Engineer_Pharma_Outreach.md)).
 
-### 2. Candidate Education Graduation Year Codification (Graduation Year: 2020)
-- Explicit user confirmation: College completion year is strictly `2020` (University of Delhi, 07/2017 to 07/2020).
-- Updated `core/qa_semantics_engine.py` to deterministically return `"2020"` for all variations of graduation year, completion year, passing year, and passout year.
-- Added comprehensive unit tests in `tests/test_qa_semantics_engine.py`.
-- Verified 100% pass across all 456 unit tests (`pytest tests/`).
-
-### 3. Modern LinkedIn SDUI Form Handling & Interactive Prompts
-- Added group resolution for modern LinkedIn SDUI radio buttons lacking `<fieldset>` containers.
-- Implemented `ask_user_for_answer()`: Triggers macOS chime (`Glass.aiff`), push notification, and native dialog if an unknown question requires candidate input, automatically caching the response into `user_inputs/application_qa_knowledge_base.json`.
+### 2. GitHub Maintenance & Dependency Hygiene
+1. **GitHub Issue #1 Resolved:** Audited upstream commits from `MadsLorentzen/ai-job-search`, populated `.github/upstream-wontport.txt`, enhanced `.github/workflows/upstream-watch.yml`, and closed Issue #1.
+2. **GitHub PR #2 Merged:** Bumped `zod` to v4.6.7 across 4 CLI directories and fast-forwarded `master`.
+3. **Quality Gates 100% Passed:** Level 1 (PII audit), Level 2 (SSRF guard), Level 3 (linter integrity), Level 4 (Python 3.15 lazy imports), Level 5 (495 passed unit tests in pytest).
 
 ---
 
@@ -46,7 +47,7 @@ Integrated verified patterns from `nicolomantini/LinkedIn-Easy-Apply-Bot` and `G
 - **Secrets & Credentials (Local Only):** `.env` & `~/.config/job-agent/.candidate_secrets.json` (gitignored)
 - **Universal ATS Automation Engine:** `tools/ats_runner.py` & `tools/linkedin_easy_apply_runner.py` (headed Playwright with persistent browser)
 - **Deterministic Q&A Semantics:** `core/qa_semantics_engine.py`
-- **Application Tracker & Local DB:** `user_inputs/job_search_tracker.csv` & `jobs.db` via `tools/sync_tracker.py`
+- **Application Tracker & Local DB:** `user_inputs/job_search_tracker.csv` & `jobs.db` via `tools/sync_tracker.py` (448 total synchronized applications)
 - **Zero-Cost LLM Engine:** Strictly free OpenRouter models (`google/gemma-4-31b-it:free`, `cohere/north-mini-code:free`)
 
 ---
@@ -63,8 +64,7 @@ Integrated verified patterns from `nicolomantini/LinkedIn-Easy-Apply-Bot` and `G
 - **Expected Compensation:** 28 LPA (`2800000` INR / `233333` Monthly)
 - **Notice Period:** Strictly `0` (Immediate joiner)
 - **Earliest / Future Start Date:** Next business day (`MM/DD/YYYY` or `YYYY-MM-DD`)
-- **Daily Easy Apply Submissions Completed Today:** 33 applications (LinkedIn account-level daily limit reached)
-- **Daily Limit Guard:** Automated detector for `"You reached today’s Easy Apply limit"` modal, clicks 'Got it', alerts user, and terminates cleanly.
+- **Daily Easy Apply Safety Ceiling:** 40 applications per rolling 24h.
 
 ---
 
@@ -72,24 +72,26 @@ Integrated verified patterns from `nicolomantini/LinkedIn-Easy-Apply-Bot` and `G
 
 1. **NEVER Close the Browser Window:** When automation finishes or pauses, leave the browser open and interactive on display.
 2. **Token-Lean Architecture:** Never create throwaway or single-job scripts (`apply_xyz.py`). All automation must use parameterized reusable engines.
-3. **Zero Em Dashes:** Never use em dashes (`—`) in prose or code. Use standard hyphens (`-`), commas, or parentheses.
-4. **Zero-Cost OpenRouter Models:** Use only models ending with `:free`. Never incur billable spend.
-5. **Daily Application Limit:** Enforce strict safety ceiling of 40 Easy Apply submissions per rolling 24 hours.
+3. **Zero Em Dashes:** Never use em dashes (Unicode U+2014) in prose or code. Use standard hyphens (`-`), commas, or parentheses.
+4. **Strict Resume and Cover Letter Separation:** Under NO circumstances should a resume be uploaded into a cover letter field, or vice versa.
+5. **Zero-Cost OpenRouter Models:** Use only models ending with `:free`. Never incur billable spend. Do not use OpenRouter until explicitly asked for.
+6. **Gemini-Exclusive Writing:** Use active Gemini exclusively for drafting and humanizing cover letters.
 
 ---
 
-## 5. Ready-to-Run Command for Next Clean Session
+## 5. Next Steps for Upcoming Session
 
-To launch the autonomous LinkedIn Easy Apply run in the new session:
-
-```bash
-PYTHONUNBUFFERED=1 .venv/bin/python tools/linkedin_easy_apply_runner.py \
-  --keywords "Data Analyst" "Analytics Consultant" "Business Analyst" \
-  --location "India" \
-  --time-filter "r86400" \
-  --sort DD \
-  --no-remote \
-  --experience-level "3,4" \
-  --max-yoe 8 \
-  --target 40
-```
+1. **Monitor Inbound Responses:** Track recruiter replies from Yatin Saini (Evalueserve) and Kanchan (Spectral Consultants).
+2. **LinkedIn Easy Apply Batch Execution:** If initiating the next daily batch of Easy Apply jobs in India (Non-Remote):
+   ```bash
+   PYTHONUNBUFFERED=1 .venv/bin/python tools/linkedin_easy_apply_runner.py \
+     --keywords "Data Analyst" "Analytics Consultant" "Business Analyst" \
+     --location "India" \
+     --time-filter "r86400" \
+     --sort DD \
+     --no-remote \
+     --experience-level "3,4" \
+     --max-yoe 8 \
+     --target 40
+   ```
+3. **Custom Portal Applications:** Run candidate portal submissions via `tools/ats_runner.py` with verified credentials stored in `user_inputs/candidate_accounts.json`.

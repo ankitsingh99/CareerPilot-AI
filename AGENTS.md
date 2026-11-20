@@ -102,17 +102,20 @@ The following behavioral and operational rules apply across all execution engine
 - **Cover Letter Closing Phrasing Constraint:** NEVER write `(0 days notice)` / `0 days notice` or city-specific `interviews in <City>` in cover letters; just `interview` cleanly.
 - **Gemini-Exclusive Cover Letter Writing & Humanizing:** Exclusively use the active **Gemini** model for writing, rewriting, proofreading, and humanizing cover letters. NEVER delegate cover letter drafting or humanizing to non-Gemini LLMs (`cohere/north-mini-code:free`, `qwen2.5:7b` Ollama, `nvidia/*`, `minimax/*`, etc.). Use local deterministic scripts (`tools/dl_humanizer_prefilter.py`, `parsers/turnitout_engine.py`, `tools/validate_cover_letter.py`, `tools/verify_cv_facts.py`) only for filtering, stylometric/entropy checks, structural linting, and CV fact auditing.
 
-### 2.2 Model & Cost Directives
-- **STRICT ZERO-COST OPENROUTER DIRECTIVE (NO PAID CALLS EVER):**
-  - Zero financial budget. ONLY open-source models ending strictly with `:free` (e.g. `google/gemma-4-31b-it:free`, `cohere/north-mini-code:free`, `minimax/minimax-m3.1-flash:free`) are permitted.
-  - NEVER invoke, configure, or fall back to any paid tier or billable endpoint.
-  - If free endpoints are busy, alert the user rather than incurring cost.
-- **OPENROUTER ON-DEMAND INVOCATION DIRECTIVE:**
-  - Do NOT use OpenRouter until explicitly asked for by the user.
-  - Contextual Continuation Exception: Use OpenRouter ONLY if:
-    1. The user explicitly requests to use OpenRouter (e.g. "use openrouter").
-    2. The user previously asked to perform a task using OpenRouter and then answers a follow-up question or provides input for that task without explicitly repeating "use openrouter".
-  - In all other workflows, rely on local deterministic compute and offline parsers.
+### 2.2 Cost-Intelligent Model Architecture & Adaptive Promotion
+- **Token-Lean Two-Tier Routing Philosophy:** We operate on a token-lean architecture, but this does not mean never using Gemini or frontier reasoning models. We use cheaper or free models for low-reasoning tasks and reserve Gemini for higher-reasoning tasks:
+  - **Tier 1 (Chore / Low-Reasoning):** Use cheaper or free models (local Ollama, OpenRouter fast free models like `nvidia/nemotron-3.5-lightning:free`, `liquid/lfm-3-1.7b:free`, `minimax/minimax-m3.1-flash:free`, or lightweight cloud endpoints) for low-reasoning tasks (regex extraction, text compression, initial job triage, basic screening queries, deduplication).
+  - **Tier 2 (Frontier / High-Reasoning / Gemini):** Reserve the active Gemini model (Antigravity Gemini, Gemini Pro / Flash High Reasoning) for high-reasoning tasks (complex ATS screening questionnaires, cover letter authoring and humanization, strategic executive outreach pitches, architectural debugging, novel/unseen form validation).
+- **User Correction, Halt Tracking & Adaptive Task Promotion:**
+  - Maintain a persistent ledger in `user_inputs/user_corrections_log.json` and `intelligence/mistake_router.py` recording instances where the user has halted, corrected, or guided the agent.
+  - **Adaptive Escalation:** If mistakes or user corrections in a task category rise (critical correction >= 1 or recurrence >= 2), the router dynamically escalates and promotes that entire task category to be handled exclusively by the higher-reasoning model (Gemini).
+- **Real-Time Analytics & Resilience (FreeLLMAPI Patterns):**
+  - Track real-time model usage, tier distribution, token conservation, and rate limits in `user_inputs/model_routing_analytics.json` (inspected via `python tools/model_analytics.py --status`).
+  - **Tool-Call & JSON Output Rescue:** Cheaper models emitting conversational chatter or unescaped markdown code fences are automatically cleaned and repaired into valid JSON schemas via `core.model_router.rescue_json_output()`. If rescue fails, the task immediately escalates to Tier 2.
+  - **Sliding-Window Cooldown Ledger:** When an external model endpoint returns 429 (Rate Limit) or 5xx, the router sets a temporary cooldown and seamlessly fails over to the next candidate model in the tier without hanging or crashing.
+- **OpenRouter On-Demand Invocation Directive:**
+  - Do NOT invoke OpenRouter until explicitly asked for by the user or required for on-demand headless task execution.
+  - Contextual Continuation Exception: Use OpenRouter if the user explicitly requests it or continues an active task previously started with OpenRouter.
 
 ### 2.3 Browser Automation Hierarchy
 1. **Primary Automation:** Local headed Playwright runner (`tools/ats_runner.py`).
@@ -126,6 +129,7 @@ The following behavioral and operational rules apply across all execution engine
 
 ### 2.4 File Upload & Application Rules
 - **Direct File Upload Preference:** ALWAYS attach and upload the master CV PDF and tailored Cover Letter directly via the file chooser input.
+- **Strict Separation of Resume and Cover Letter (ZERO-TOLERANCE):** NEVER upload a resume into a cover letter field, and NEVER upload a cover letter into a resume field. If an ATS portal has a dedicated Cover Letter file input or section, a tailored cover letter MUST be generated, humanized, and verified FIRST before automation reaches that step. If no tailored cover letter is available, the cover letter field must be left blank or paused for review; the runner must NEVER substitute the resume.
 - **Manual Text Entry Forbidden if Upload Exists:** NEVER paste raw resume text into manual textareas unless the portal has no file upload capability.
 - **Dynamic CV Check:** Dynamically resolve the latest master resume PDF by checking `cv/` and `user_inputs/cv/` or referencing `CANDIDATE_MASTER_RESUME` from `.env`.
 - **Autofill with Resume First:** If the portal offers "Autofill with Resume", always click it and upload the CV first to auto-populate fields.

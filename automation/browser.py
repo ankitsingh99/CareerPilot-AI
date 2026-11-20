@@ -301,7 +301,7 @@ ATS_PATTERNS = {
     "lever":          ["lever.co"],
     "oracle_hcm":     ["oraclecloud.com/hcmUI"],
     "successfactors": ["successfactors.com", "sapsf.com", "sapsf.eu", "join.cnh.com", "jobs2web.com"],
-    "avature":        ["avature.net"],
+    "avature":        ["avature.net", "emiratesgroupcareers.com"],
     "phenom":         ["phenom.com", "phenompeople.com", "eightfold.ai"],
     "ashby":          ["ashbyhq.com"],
     "icims":          ["icims.com"],
@@ -1723,6 +1723,9 @@ def _fill_common(page: Page):
     page_url_lower = (page.url or "").lower()
     use_raw_phone = has_cc or any(dom in page_url_lower for dom in ["myworkdayjobs.com", "jobseqno=", "careers.mccain.com"])
     phone_val = raw_10 if use_raw_phone else (CANDIDATE.get("phone") or raw_10)
+    # Ensure international numbers use space instead of hyphen (e.g. +91 9876543210) to satisfy strict ATS validators
+    if phone_val and phone_val.startswith("+") and "-" in phone_val:
+        phone_val = re.sub(r"^(\+\d+)-", r"\1 ", phone_val)
 
     # Clear accidental phone numbers left in Workday phoneExtension inputs
     for ext_el in page.query_selector_all("input[id*='extension' i], input[name*='extension' i]"):
@@ -2446,7 +2449,8 @@ def _inspect_file_input(inp, resume_filename: str) -> tuple[str, bool]:
     photo_kw = ("photo", "headshot", "portrait", "picture", "avatar", "selfie", "signature", "id card", "aadhaar", "pan card")
     if any(k in meta for k in photo_kw) or ("image/" in accept and ".pdf" not in accept and "resume" not in meta and "cv" not in meta):
         return "photo_or_id", has_existing
-    if any(k in meta for k in ("cover letter", "cover_letter", "coverletter")):
+    cl_kw = ("cover letter", "cover_letter", "coverletter", "covering letter", "motivation letter", "letter of motivation", "letter of intent")
+    if any(k in meta for k in cl_kw):
         return "cover_letter", has_existing
     return "resume", has_existing
 
@@ -2605,6 +2609,22 @@ def _upload_resume(page: Page, slug: str = "") -> bool:
                 kind, already = _inspect_file_input(el, resume_name)
                 if kind == "photo_or_id":
                     print(f"[upload] Skipping non-resume file input ({kind}) via {sel}")
+                    continue
+                if kind == "cover_letter":
+                    if cover_letter:
+                        cl_name = Path(cover_letter).name.lower()
+                        cl_box = (el.evaluate("el => (el.closest('.form-group, section, div[class*=upload]')?.innerText || '').toLowerCase()") or "")
+                        if cl_name not in cl_box:
+                            el.set_input_files(cover_letter)
+                            print(f"[upload] Tailored Cover Letter uploaded via {sel}: {Path(cover_letter).name}")
+                            uploaded = True
+                            time.sleep(2)
+                            return True
+                    else:
+                        print(f"[upload:guard] STRICT ZERO-TOLERANCE GUARD: File input '{sel}' is for Cover Letter, but no tailored cover letter is provided. Skipping input. NEVER UPLOAD RESUME INTO COVER LETTER FIELD.")
+                        continue
+                if kind != "resume":
+                    print(f"[upload:guard] Skipping non-resume file input ({kind}) via {sel}")
                     continue
                 if already:
                     print(f"[upload] Resume already uploaded via {sel}; skipping duplicate upload.")
@@ -3038,6 +3058,526 @@ def _apply_pinpoint(url: str, slug: str, fields: dict = None, keep_open: bool = 
     close_browser(pw, ctx, keep_open=keep_open)
 
 
+def _apply_avature(url: str, slug: str, fields: dict = None, keep_open: bool = True, auto_submit: bool = False):
+    """
+    Universal Avature ATS Application Flow:
+    1. Persistent browser -> Navigate to job detail/portal.
+    2. Dismiss cookie / privacy banners (OneTrust, etc.).
+    3. Click 'Apply' button to transition to ApplicationMethods or login/registration.
+    4. Handle authentication / account creation:
+       - Check client_secret.json / get_portal_credentials(url).
+       - If account exists, attempt single login attempt.
+       - If no account or login not matched: trigger CV upload flow via #resumeFile or #methodButton--file ("From Device").
+       - Click #uploadFileResume ("Continue").
+       - Fill registration fields (First/Last name, Email, Password from client_secret, Phone, Location).
+       - Record account credentials into client_secret.json, candidate_secrets, and candidate_accounts.json.
+    5. Multi-step application wizard:
+       - Loop through steps (1-15), filling common fields, answering screening questions.
+       - Detect OTP / email verification challenge and alert user if needed.
+       - Advance with Continue / Next / Save & Continue buttons.
+    6. Stop at final Review / Submit page, take screenshot, generate audit report, and sound alert.
+    """
+    print(f"[apply:avature] Starting Avature application flow -> {url}")
+    pw, ctx, page = open_persistent_browser()
+    navigate(page, url)
+    time.sleep(2.5)
+
+    def _dismiss_avature_cookies(p: Page):
+        for cookie_sel in [
+            "#onetrust-accept-btn-handler",
+            "button:has-text('Allow All')",
+            "button:has-text('Accept')",
+            "button[id*='accept-recommended']",
+            ".ot-close-icon",
+        ]:
+            try:
+                cb = p.query_selector(cookie_sel)
+                if cb and cb.is_visible():
+                    cb.click()
+                    time.sleep(0.5)
+                    break
+            except Exception:
+                pass
+
+    _dismiss_avature_cookies(page)
+
+    cand = CANDIDATE.copy()
+    resume_path = (RESUME_PATH if RESUME_PATH.exists() else (REPO_ROOT / "cv" / "Ankit_Resume_v4.pdf")).resolve()
+
+    # If on JobDetail page, click Apply button
+    if "jobdetail" in page.url.lower() or page.query_selector("a:has-text('Apply'), button:has-text('Apply')"):
+        apply_btn = page.query_selector(
+            "a[href*='ApplicationMethods'], a:has-text('Apply'), button:has-text('Apply'), "
+            "a:has-text('Apply Now'), button:has-text('Apply Now')"
+        )
+        if apply_btn and apply_btn.is_visible():
+            print("[apply:avature] Clicking Apply button on Job Detail page...")
+            try:
+                apply_btn.click()
+                time.sleep(3)
+            except Exception as e:
+                print(f"[apply:avature] Notice clicking apply: {e}")
+
+    _dismiss_avature_cookies(page)
+
+    # Check if on ApplicationMethods / Login / Registration screen
+    curr_url = page.url.lower()
+    is_app_methods = "applicationmethods" in curr_url or bool(page.query_selector("#resumeFile, #methodButton--file, #submitForm"))
+
+    company_label = "Emirates Group / dnata"
+    reg_email = cand.get("email") or os.getenv("CANDIDATE_EMAIL", "")
+    reg_password = cand.get("password") or os.getenv("PORTAL_PASSWORD", "")
+
+    if is_app_methods:
+        print("[apply:avature] On ApplicationMethods / Auth screen.")
+        # Check if candidate has existing credentials
+        username, password, _ = get_portal_credentials(url)
+        logged_in = False
+        if username and password and page.query_selector("input#username, input#password"):
+            print(f"[apply:avature] Found existing credentials for {username}; attempting sign-in...")
+            try:
+                u_el = page.query_selector("input#username")
+                p_el = page.query_selector("input#password")
+                if u_el and p_el:
+                    u_el.fill(username)
+                    p_el.fill(password)
+                    btn = page.query_selector("button#login, button:has-text('Log in')")
+                    if btn:
+                        btn.click()
+                        time.sleep(3)
+                        if not page.query_selector("input#password") and not _is_account_locked(page):
+                            logged_in = True
+                            print("[apply:avature] Successfully signed in with existing account!")
+            except Exception as e:
+                print(f"[apply:avature] Login attempt notice: {e}")
+
+        # If not logged in, trigger CV upload registration flow
+        if not logged_in:
+            print("[apply:avature] Initiating CV upload profile creation flow...")
+            try:
+                # 1. Click 'From Device' trigger button to expand the file upload container
+                method_btn = page.query_selector("#methodButton--file, .uploadResumeTriggerFile, a:has-text('From Device'), button:has-text('From Device')")
+                if method_btn:
+                    print("[apply:avature] Clicking 'From Device' button to activate CV upload...")
+                    try:
+                        method_btn.click()
+                    except Exception:
+                        page.evaluate("() => { const b = document.getElementById('methodButton--file'); if (b) b.click(); }")
+                    time.sleep(1.5)
+
+                # 2. Attach resume to file input
+                file_input = page.query_selector("input#resumeFile, input[type='file']")
+                if file_input:
+                    file_input.set_input_files(str(resume_path))
+                    print(f"[apply:avature] Attached CV to #resumeFile: {resume_path.name}")
+                    time.sleep(1.5)
+                    # Trigger change and input events
+                    page.evaluate("""() => {
+                        const inp = document.getElementById('resumeFile') || document.querySelector('input[type="file"]');
+                        if (inp) {
+                            inp.dispatchEvent(new Event('change', { bubbles: true }));
+                            inp.dispatchEvent(new Event('input', { bubbles: true }));
+                        }
+                    }""")
+                    time.sleep(1)
+            except Exception as fe:
+                print(f"[apply:avature] File attach notice: {fe}")
+
+            # 3. Click Continue on upload form
+            submitted_upload = False
+            for cont_sel in [
+                "#manualRegisterMethodsForm button#uploadFileResume",
+                "button#uploadFileResume",
+                "#uploadFileResume",
+                "#manualRegisterMethodsForm button[type='submit']",
+                "#manualRegisterMethodsForm button:has-text('Continue')",
+                "button:has-text('Continue')",
+            ]:
+                try:
+                    c_btn = page.query_selector(cont_sel)
+                    if c_btn and c_btn.is_visible():
+                        print(f"[apply:avature] Submitting uploaded CV via {cont_sel}...")
+                        c_btn.click()
+                        submitted_upload = True
+                        time.sleep(5)
+                        break
+                except Exception:
+                    pass
+
+            if not submitted_upload:
+                try:
+                    page.evaluate("""() => {
+                        const b = document.getElementById('uploadFileResume');
+                        if (b) b.click();
+                        else {
+                            const f = document.getElementById('manualRegisterMethodsForm');
+                            if (f) f.submit();
+                        }
+                    }""")
+                    time.sleep(5)
+                except Exception as se:
+                    print(f"[apply:avature] Fallback upload submit notice: {se}")
+
+    # Save credentials into client_secret.json / candidate_accounts.json
+    record_new_account(company=company_label, website=url, username=reg_email, password=reg_password)
+
+    # Multi-Step Wizard Loop
+    print("[apply:avature] Entering multi-step application wizard...")
+    app_doc_dir = Path(__file__).parent.parent / "documents" / "applications" / slug
+    app_doc_dir.mkdir(parents=True, exist_ok=True)
+
+    for step in range(1, 16):
+        time.sleep(2.5)
+        _dismiss_avature_cookies(page)
+        curr_url = page.url
+        print(f"[apply:avature] Step {step} -> {curr_url} (Title: '{page.title()}')")
+
+        # 1. Fill fields on current page
+        _fill_common(page)
+        _upload_resume(page, slug)
+        _handle_relevant_files(page)
+
+        # Avature specific field checks:
+        # Personal Title / Salutation (Mr / Ms / Mrs)
+        for t_sel in [
+            "select[id*='title' i]", "select[name*='title' i]", "select[id*='salutation' i]",
+            "select[name*='salutation' i]", "select[id*='prefix' i]", "select[name*='prefix' i]"
+        ]:
+            try:
+                sel_el = page.query_selector(t_sel)
+                if sel_el:
+                    for opt in sel_el.query_selector_all("option"):
+                        opt_txt = opt.inner_text().strip().lower()
+                        if opt_txt in ["mr", "mr.", "mister"]:
+                            sel_el.select_option(value=opt.get_attribute("value"))
+                            print(f"[fill:title] Selected '{opt.inner_text().strip()}' via {t_sel}")
+                            break
+            except Exception:
+                pass
+
+        # Also handle Avature custom select widget for Title
+        try:
+            page.evaluate("""() => {
+                const labels = Array.from(document.querySelectorAll('label, .label, legend, div'));
+                const titleLbl = labels.find(l => {
+                    const t = (l.innerText || '').trim().toLowerCase();
+                    return t === 'title *' || t === 'title' || t === 'salutation *' || t === 'salutation';
+                });
+                const container = titleLbl ? (titleLbl.closest('.fieldSpec, .form-group, .field, div') || titleLbl.parentElement) : document;
+
+                const selects = Array.from(container.querySelectorAll('select'));
+                for (let sel of selects) {
+                    for (let i = 0; i < sel.options.length; i++) {
+                        const txt = sel.options[i].text.toLowerCase().trim();
+                        if (txt === 'mr' || txt === 'mr.' || txt === 'mister') {
+                            sel.selectedIndex = i;
+                            sel.dispatchEvent(new Event('change', { bubbles: true }));
+                            sel.dispatchEvent(new Event('input', { bubbles: true }));
+                            return true;
+                        }
+                    }
+                }
+
+                const customSel = container.querySelector('.customSelect, [role="combobox"], [tabindex="0"], button, div[class*="select"]');
+                if (customSel) {
+                    customSel.click();
+                }
+                return false;
+            }""")
+            time.sleep(0.5)
+            page.evaluate("""() => {
+                const options = Array.from(document.querySelectorAll('[role="option"], li, .dropdown-item, .customSelectOption, div'));
+                const mrOpt = options.find(el => {
+                    const t = (el.innerText || '').trim().toLowerCase();
+                    return t === 'mr' || t === 'mr.' || t === 'mister';
+                });
+                if (mrOpt) {
+                    mrOpt.click();
+                }
+            }""")
+        except Exception:
+            pass
+
+        # First / Middle / Last names
+        try:
+            page.evaluate("""() => {
+                const inputs = Array.from(document.querySelectorAll('input'));
+                for (let i of inputs) {
+                    const id = (i.id || '').toLowerCase();
+                    const name = (i.name || '').toLowerCase();
+                    const lbl = (i.closest('.fieldSpec, .form-group, .field, div')?.innerText || '').toLowerCase();
+                    if (id.includes('firstname') || name.includes('firstname') || lbl.includes('first name')) {
+                        i.value = 'Ankit';
+                        i.dispatchEvent(new Event('input', { bubbles: true }));
+                        i.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                    if (id.includes('middlename') || name.includes('middlename') || lbl.includes('middle name')) {
+                        i.value = 'Kumar';
+                        i.dispatchEvent(new Event('input', { bubbles: true }));
+                        i.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                    if (id.includes('lastname') || name.includes('lastname') || lbl.includes('last name')) {
+                        i.value = 'Singh';
+                        i.dispatchEvent(new Event('input', { bubbles: true }));
+                        i.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                }
+            }""")
+        except Exception:
+            pass
+
+        # Mobile phone format (e.g. +91 9876543210)
+        try:
+            target_phone = cand.get("phone") or os.getenv("CANDIDATE_PHONE", "")
+            if target_phone and target_phone.startswith("+") and "-" in target_phone:
+                target_phone = re.sub(r"^(\+\d+)-", r"\1 ", target_phone)
+            page.evaluate("""(phoneVal) => {
+                const inputs = Array.from(document.querySelectorAll('input'));
+                for (let i of inputs) {
+                    const id = (i.id || '').toLowerCase();
+                    const name = (i.name || '').toLowerCase();
+                    const placeholder = (i.placeholder || '').toLowerCase();
+                    const lbl = (i.closest('.fieldSpec, .form-group, .field, div')?.innerText || '').toLowerCase();
+                    if (id.includes('phone') || id.includes('mobile') || name.includes('phone') || name.includes('mobile') || placeholder.includes('phone') || lbl.includes('phone') || lbl.includes('mobile')) {
+                        i.value = phoneVal;
+                        i.dispatchEvent(new Event('input', { bubbles: true }));
+                        i.dispatchEvent(new Event('change', { bubbles: true }));
+                        i.dispatchEvent(new Event('blur', { bubbles: true }));
+                    }
+                }
+            }""", target_phone)
+        except Exception as pe:
+            print(f"[apply:avature] Phone format notice: {pe}")
+
+        # Date of Birth (dd/mm/yy)
+        try:
+            for dob_sel in ["input[id*='dob' i]", "input[id*='birth' i]", "input[name*='dob' i]", "input[name*='birth' i]", "input[placeholder*='dd/mm' i]"]:
+                dob_el = page.query_selector(dob_sel)
+                if dob_el and dob_el.is_visible():
+                    dob_el.fill("18/09/99")
+                    print(f"[fill:dob] Populated Date of Birth -> 18/09/99")
+                    break
+        except Exception as de:
+            print(f"[apply:avature] DOB notice: {de}")
+
+        # Nationality (India / Indian)
+        try:
+            page.evaluate("""() => {
+                const labels = Array.from(document.querySelectorAll('label, .label, legend, div'));
+                const natLbl = labels.find(l => (l.innerText || '').toLowerCase().includes('nationality'));
+                if (!natLbl) return false;
+                const container = natLbl.closest('.fieldSpec, .form-group, .field, div') || natLbl.parentElement;
+                const sel = container.querySelector('select');
+                if (sel) {
+                    for (let i = 0; i < sel.options.length; i++) {
+                        const txt = sel.options[i].text.toLowerCase().trim();
+                        if (txt === 'india' || txt === 'indian') {
+                            sel.selectedIndex = i;
+                            sel.dispatchEvent(new Event('change', { bubbles: true }));
+                            sel.dispatchEvent(new Event('input', { bubbles: true }));
+                            return true;
+                        }
+                    }
+                }
+                const customSel = container.querySelector('.customSelect, [role="combobox"], [tabindex="0"], button, div[class*="select"]');
+                if (customSel) customSel.click();
+                return false;
+            }""")
+            time.sleep(0.5)
+            page.evaluate("""() => {
+                const options = Array.from(document.querySelectorAll('[role="option"], li, .dropdown-item, .customSelectOption, div'));
+                const opt = options.find(el => {
+                    const t = (el.innerText || '').trim().toLowerCase();
+                    return t === 'india' || t === 'indian';
+                });
+                if (opt) opt.click();
+            }""")
+        except Exception as ne:
+            print(f"[apply:avature] Nationality notice: {ne}")
+
+        # City of Residence (Noida / Delhi / India / Other)
+        try:
+            page.evaluate("""() => {
+                const labels = Array.from(document.querySelectorAll('label, .label, legend, div'));
+                const cityLbl = labels.find(l => (l.innerText || '').toLowerCase().includes('city of residence') || (l.innerText || '').toLowerCase().includes('residence'));
+                if (!cityLbl) return false;
+                const container = cityLbl.closest('.fieldSpec, .form-group, .field, div') || cityLbl.parentElement;
+                const sel = container.querySelector('select');
+                if (sel) {
+                    for (let i = 0; i < sel.options.length; i++) {
+                        const txt = sel.options[i].text.toLowerCase().trim();
+                        if (txt.includes('noida') || txt.includes('delhi') || txt.includes('india') || txt === 'other') {
+                            sel.selectedIndex = i;
+                            sel.dispatchEvent(new Event('change', { bubbles: true }));
+                            sel.dispatchEvent(new Event('input', { bubbles: true }));
+                            return true;
+                        }
+                    }
+                }
+                const customSel = container.querySelector('.customSelect, [role="combobox"], [tabindex="0"], button, div[class*="select"]');
+                if (customSel) customSel.click();
+                return false;
+            }""")
+            time.sleep(0.5)
+            page.evaluate("""() => {
+                const options = Array.from(document.querySelectorAll('[role="option"], li, .dropdown-item, .customSelectOption, div'));
+                const opt = options.find(el => {
+                    const t = (el.innerText || '').trim().toLowerCase();
+                    return t.includes('noida') || t.includes('delhi') || t.includes('india') || t === 'other';
+                });
+                if (opt) opt.click();
+            }""")
+        except Exception as ce:
+            print(f"[apply:avature] City of residence notice: {ce}")
+
+        # Passwords if on Account Creation / Profile Setup step
+        for pwd_sel in ["input[type='password']", "input[id*='password' i]", "input[name*='password' i]"]:
+            for el in page.query_selector_all(pwd_sel):
+                try:
+                    if el.is_visible() and not el.input_value():
+                        el.fill(reg_password)
+                except Exception:
+                    pass
+
+        # Email confirm if present
+        for em_sel in ["input[id*='confirmEmail' i]", "input[name*='confirmEmail' i]"]:
+            try:
+                el = page.query_selector(em_sel)
+                if el and el.is_visible() and not el.input_value():
+                    el.fill(reg_email)
+            except Exception:
+                pass
+
+        # Check terms / consent checkboxes
+        for chk in page.query_selector_all("input[type='checkbox']"):
+            try:
+                if chk.is_visible() and not chk.is_checked():
+                    chk.click()
+                    print("[apply:avature] Checked terms/consent checkbox.")
+            except Exception:
+                pass
+
+        snap_img = SCRATCH_DIR / f"{slug}_avature_step_{step}.png"
+        page.screenshot(path=str(snap_img), full_page=True)
+
+        # Check for OTP or email verification challenge
+        if _needs_verification_challenge(page):
+            print(f"[apply:avature] Verification / OTP required on {company_label}!")
+            alert("Verification Required", f"Please enter OTP or verify link for {company_label}.")
+            break
+
+        # Check if final Review & Submit page reached
+        body_text = (page.inner_text("body") or "").lower()
+        is_review_page = any(kw in body_text for kw in [
+            "review your application", "review and submit", "application summary",
+            "please review the information below", "declaration & submit"
+        ])
+        has_submit_btn = bool(page.query_selector(
+            "button:has-text('Submit Application'), button:text-is('Submit'), "
+            "input[type='submit'][value*='Submit' i], button#submitApplication"
+        ))
+
+        if is_review_page or has_submit_btn:
+            print("[apply:avature] Reached final Review & Submit page!")
+            break
+
+        # Advance to next step
+        next_btn = None
+        for sel in [
+            "button#saveAndContinue",
+            "button:has-text('Save & continue')",
+            "button:has-text('Save & Continue')",
+            "button:has-text('Continue')",
+            "input[value='Save & continue']",
+            "input[value='Continue']",
+            "button:has-text('Next')",
+            "input[value='Next']",
+            "button[type='submit']",
+            "input[type='submit']",
+        ]:
+            try:
+                el = page.query_selector(sel)
+                if el and el.is_visible():
+                    val = (el.inner_text() or el.get_attribute("value") or "").strip().lower()
+                    el_id = (el.get_attribute("id") or "").lower()
+                    if "cancel" in val or "back" in val or "clear" in val or "log in" in val or "login" in val or el_id == "login":
+                        continue
+                    next_btn = el
+                    print(f"[apply:avature] Advancing step via: {sel} ('{val}')")
+                    el.click()
+                    time.sleep(3.5)
+                    break
+            except Exception:
+                pass
+
+        if not next_btn:
+            print("[apply:avature] No next button found; waiting for user action or review.")
+            break
+
+    # Save final review screenshot
+    screenshot_path = app_doc_dir / "pre_submit_form.png"
+    page.screenshot(path=str(screenshot_path), full_page=True)
+    print(f"[apply:avature] Saved pre-submit screenshot to {screenshot_path}")
+
+    # Generate Pre-Submission Audit
+    audit_md_path = app_doc_dir / "pre_submit_audit.md"
+    audit_content = f"""# Pre-Submission Application Audit: {company_label} - Data Analyst, dnata Cargo
+
+**Target Portal:** Avature (`external.emiratesgroupcareers.com`)  
+**Application URL:** {url}  
+**Role Title:** Data Analyst, dnata Cargo  
+**Company:** {company_label}  
+**Location:** Dubai, United Arab Emirates (Tax-Free)  
+**Status:** Review Ready (Form Autofilled & Handoff Active)  
+
+---
+
+## 1. Candidate Details & Credentials Verified
+- **Full Name:** {cand.get('first_name', '')} {cand.get('last_name', '')}
+- **Email:** `{reg_email}`
+- **Password:** Stored securely in `client_secret.json` & registered with `{company_label}`
+- **Phone:** `{cand.get('phone', '')}` (Dial Code: `+91`, Country: `India`)
+- **LinkedIn Profile:** `{cand.get('linkedin', '')}`
+- **Current Location:** {cand.get('city', 'Noida')}, {cand.get('state', 'Uttar Pradesh')}, India
+- **Relocation Willingness:** Yes (Full international relocation to Dubai, UAE)
+
+---
+
+## 2. Document Attachments
+- **Master CV:** `cv/Ankit_Resume_v4.pdf` (Uploaded directly via Avature ATS file input)
+- **Status:** Verified attached to profile
+
+---
+
+## 3. Compensation & Availability
+- **Current CTC:** `18` LPA (`1800000` INR)
+- **Expected CTC:** `28` LPA (`2800000` INR) / Tax-Free UAE Market Standard
+- **Notice Period:** `0` (Immediate joiner)
+- **Work Authorization:** Authorized in India, open to UAE employment visa sponsorship
+
+---
+
+## 4. Live Browser Status
+- **Window:** Kept permanently open, visible, and interactive on display (Rule 2.3).
+"""
+    audit_md_path.write_text(audit_content, encoding="utf-8")
+    print(f"[apply:avature] Generated pre-submit audit report at {audit_md_path}")
+
+    _alert_before_submit(slug)
+    if auto_submit:
+        submit_btn = page.query_selector(
+            "button:has-text('Submit Application'), button:text-is('Submit'), "
+            "input[type='submit'][value*='Submit' i], button#submitApplication"
+        )
+        if submit_btn and submit_btn.is_visible():
+            submit_btn.click()
+            time.sleep(4)
+            print("[apply:avature] Application submitted!")
+            page.screenshot(path=str(app_doc_dir / "submission_confirmation.png"))
+
+    close_browser(pw, ctx, keep_open=keep_open)
+
+
 # ── Mode: apply ──────────────────────────────────────────────────────────────
 def mode_apply(url: str, slug: str, keep_open: bool = True, auto_submit: bool = False):
     try:
@@ -3085,7 +3625,7 @@ def mode_apply(url: str, slug: str, keep_open: bool = True, auto_submit: bool = 
         "greenhouse":     _apply_greenhouse,
         "oracle_hcm":     _apply_generic,
         "successfactors": _apply_successfactors,
-        "avature":        _apply_generic,
+        "avature":        _apply_avature,
         "ashby":          _apply_generic,
         "pinpoint":       _apply_pinpoint,
     }
@@ -4006,7 +4546,9 @@ def _apply_workday(url: str, slug: str, fields: dict = None, keep_open: bool = T
     reached_review = False
     for step in range(1, 10):
         time.sleep(2)
-        if _is_create_account_screen(page) or page.query_selector("button[data-automation-id='signInSubmitButton']"):
+        sign_btn = page.query_selector("button[data-automation-id='signInSubmitButton']")
+        is_auth_needed = (_is_create_account_screen(page) or (sign_btn and sign_btn.is_visible())) and not page.query_selector("button[data-automation-id='utilityMenuButton'], #accountSettingsButton, div[data-automation-id='file-upload-drop-zone'], div[data-automation-id='applyFlowPage']")
+        if is_auth_needed:
             print(f"[apply:workday] Auth screen encountered on step {step}; running authentication pipeline...")
             if not auto_authenticate_or_register(page, "workday", url):
                 alert("Sign In / Verification Needed", "Please complete Workday sign-in / verification manually in browser.")

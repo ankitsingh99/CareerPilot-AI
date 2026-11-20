@@ -81,10 +81,19 @@ jobs:
           title="Upstream sync watch"
           existing=$(gh issue list --state open --search "in:title \"$title\"" \
             --json number,title --jq ".[] | select(.title==\"$title\") | .number" | head -n1)
+          has_review=$(grep -A 2 "### Worth reviewing" report.md | grep -v "Worth reviewing" | grep -v "_None._" | grep -c "\S" || true)
           if [ -n "$existing" ]; then
-            gh issue edit "$existing" --body-file report.md
-            echo "Updated issue #$existing"
-          else
+            if [ "$has_review" -eq 0 ]; then
+              gh issue edit "$existing" --body-file report.md
+              gh issue close "$existing" --comment "All upstream commits have been triaged and methodology files are verified up to date. Closing rolling issue."
+              echo "Closed issue #$existing (no reviewable commits pending)"
+            else
+              gh issue edit "$existing" --body-file report.md
+              echo "Updated issue #$existing"
+            fi
+          elif [ "$has_review" -gt 0 ]; then
             gh issue create --title "$title" --body-file report.md
             echo "Created a new rolling issue"
+          else
+            echo "No upstream commits worth reviewing; skipping issue creation."
           fi

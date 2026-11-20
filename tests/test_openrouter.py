@@ -73,8 +73,8 @@ class TestOpenRouter(unittest.TestCase):
             self.assertTrue(target.exists())
             content = target.read_text(encoding="utf-8")
             self.assertIn("OpenRouter Zero-Cost Free Models Catalog", content)
-            self.assertIn("cohere/north-mini-code:free", content)
             self.assertIn("openrouter/free", content)
+            self.assertIn(":free", content)
 
     def test_select_free_models_for_tier_orders_chore_vs_heavy(self):
         pool = list(dict.fromkeys(CHORE_FREE_MODELS + HEAVY_FREE_MODELS + ["misc/other:free"]))

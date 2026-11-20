@@ -442,6 +442,15 @@ def answer_modal_questions(page: Page):
                 inp.fill("Business and Technology Consultant")
                 continue
 
+            # Phone numbers on LinkedIn Easy Apply must be DIGITS ONLY (raw 10 digits without country code or '+')
+            if any(k in lbl for k in ["phone", "mobile", "telephone", "contact number"]) or inp_type == "tel":
+                curr_val = (inp.input_value() or "").strip()
+                raw_phone = os.getenv("CANDIDATE_RAW_PHONE", "").strip() or re.sub(r"\D", "", os.getenv("CANDIDATE_PHONE", ""))[-10:]
+                if not curr_val or re.search(r"\D", curr_val) or curr_val.startswith("91") or curr_val.startswith("+"):
+                    inp.fill("")
+                    inp.fill(raw_phone)
+                continue
+
             if inp.input_value():
                 continue
 

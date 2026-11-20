@@ -55,6 +55,10 @@ def load_candidate_context() -> Dict[str, Any]:
     name = os.getenv("CANDIDATE_NAME", f"{first} {last}")
     email = os.getenv("CANDIDATE_EMAIL", "")
     phone = os.getenv("CANDIDATE_PHONE", "")
+    raw_phone = os.getenv("CANDIDATE_RAW_PHONE", "").strip()
+    if not raw_phone:
+        digits = re.sub(r"\D", "", phone)
+        raw_phone = digits[-10:] if len(digits) >= 10 else digits
     city = os.getenv("CANDIDATE_CITY", "Noida")
     state = os.getenv("CANDIDATE_STATE", "Uttar Pradesh")
     country = os.getenv("CANDIDATE_COUNTRY", "India")
@@ -103,6 +107,7 @@ def load_candidate_context() -> Dict[str, Any]:
         "last_name": last,
         "email": email,
         "phone": phone,
+        "raw_phone": raw_phone,
         "address": address,
         "city": city,
         "state": state,
@@ -234,6 +239,16 @@ def ask_openrouter_free_llm(question: str, options: Optional[List[str]] = None, 
         pass
 
     try:
+        from core.model_router import route_task
+        m_route = route_task(task_name)
+        if m_route.get("tier") == "frontier":
+            task_tier = "heavy"
+            if m_route.get("promoted"):
+                print(f"[model_router] '{task_name}' escalated to higher-reasoning: {m_route.get('reason')}")
+    except Exception:
+        pass
+
+    try:
         # Tier 1: Zero-external-token local Ollama inference if running
         response = ask_local_ollama_if_online(
             user_prompt, system=system_prompt, max_tokens=max_tok, temperature=0.2
@@ -299,6 +314,18 @@ def ask_openrouter_free_llm(question: str, options: Optional[List[str]] = None, 
                 if matched_opt:
                     ans = matched_opt
             _SEMIN_CACHE[cache_key] = ans
+            try:
+                from core.model_router import record_routing_event
+                record_routing_event(
+                    task_name,
+                    "frontier" if task_tier == "heavy" else "chore",
+                    "local_ollama" if response and not is_on_demand_enabled() else f"openrouter_{task_tier}",
+                    tokens_in=len(user_prompt) // 4,
+                    tokens_out=len(ans) // 4,
+                    success=True,
+                )
+            except Exception:
+                pass
             try:
                 from intelligence.fast_recall_cache import put_qa_answer
                 put_qa_answer(question, ans, field_type=field_type, options=options, source="llm")
@@ -835,6 +862,12 @@ class QASemanticsEngine:
         if any(k in lbl for k in ["preferred name", "preferred", "nickname", "custpreferredname"]):
             return cand["first_name"]
         if any(k in lbl for k in ["phone", "mobile", "telephone", "contact number", "cell"]):
+            if any(k in lbl for k in [
+                "digits only", "no country code", "without country code", "do not include country code",
+                "do not include the country code", "only digits", "no +", "without +", "10 digit", "10-digit",
+                "raw", "symbols", "other symbols"
+            ]) or field_type in ["tel", "number"]:
+                return cand.get("raw_phone") or re.sub(r"\D", "", cand["phone"])[-10:]
             return cand["phone"]
         if any(k in lbl for k in ["email", "e-mail", "email address"]):
             return cand["email"]
