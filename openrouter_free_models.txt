@@ -1,16 +1,14 @@
 # OpenRouter Zero-Cost Free Models Catalog
-# Generated: 2026-11-15 03:40:32 UTC
-# Total Active Free Models: 15
+# Generated: 2026-11-22 03:55:22 UTC
+# Total Active Free Models: 12
 # Update Frequency: Weekly (Scheduled via GitHub Actions & Antigravity Cron)
 # Zero-Cost Policy: $0.00 / prompt token, $0.00 / completion token (100% Free)
 
 ========================================================================================
 MODEL ID                                       | CONTEXT   | NAME / PROVIDER
 ========================================================================================
-cohere/north-mini-code:free                    |   256,000 | Cohere: North Mini Code (free) [Default]
 openrouter/free                                |   200,000 | Free Models Router
 baidu/ernie-5.5-flash-preview:free             | 1,024,000 | Baidu: ERNIE-5.5-Flash-Preview (free)
-dots-studio/dots-3-note-preview:free           |   512,000 | Dots Studio: Dots3-Note Preview (free)
 google/gemma-4-26b-a4b-it:free                 |   262,144 | Google: Gemma 4 26B A4B  (free)
 google/gemma-4-31b-it:free                     |   262,144 | Google: Gemma 4 31B (free)
 inclusionai/ling-3.2-flash:free                | 1,048,576 | inclusionAI: Ling 3.2 Flash (free)
@@ -21,16 +19,13 @@ nvidia/nemotron-3.5-lightning:free             | 1,000,000 | NVIDIA: Nemotron 3.
 nvidia/nemotron-3.5-super-vl:free              | 1,000,000 | NVIDIA: Nemotron 3.5 Super VL (free)
 particle-ai/particle-1:free                    | 1,048,576 | Particle AI: Particle-1 (free)
 recursive/flint-v1.0:free                      |   262,144 | Recursive: Flint (free)
-thinkingmachines/inkling-2-small:free          | 1,048,576 | Thinking Machines: Inkling 2 Small (free)
 ========================================================================================
 
 # -----------------------------------------------------------------------------
 # PLAIN MODEL IDS LIST (For automation, scripts, and direct parsing):
 # -----------------------------------------------------------------------------
-cohere/north-mini-code:free
 openrouter/free
 baidu/ernie-5.5-flash-preview:free
-dots-studio/dots-3-note-preview:free
 google/gemma-4-26b-a4b-it:free
 google/gemma-4-31b-it:free
 inclusionai/ling-3.2-flash:free
@@ -41,4 +36,3 @@ nvidia/nemotron-3.5-lightning:free
 nvidia/nemotron-3.5-super-vl:free
 particle-ai/particle-1:free
 recursive/flint-v1.0:free
-thinkingmachines/inkling-2-small:free
